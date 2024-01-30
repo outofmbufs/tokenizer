@@ -305,7 +305,8 @@ class Tokenizer:
             yield prev
         yield from makeups
 
-    def tokens(self, strings=None, /, *, srcname=_NOTGIVEN, startnum=_NOTGIVEN):
+    def tokens(self, strings=None, /, *,
+               srcname=_NOTGIVEN, startnum=_NOTGIVEN):
         """GENERATE tokens for the entire file.
 
         strings/srcname/startnum arguments same as for __init__().
