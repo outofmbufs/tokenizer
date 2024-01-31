@@ -13,10 +13,10 @@ The Tokenizer class:
 There is also a TokStreamEnhancer providing:
  - Concatenation of multiple input streams
  - N-level "peek" / "unget"
- - A way to remember ("mark") a spot ijn the token stream and, if desired, unget tokens ("unwind") all the way back to that point.
+ - A way to remember ("mark") a spot in the token stream and, if desired, unget tokens ("unwind") all the way back to that point.
  - Two more ways (beyond just StopIteration) to handle EOF: a one-time EOF token prior to the StopIteration, or an infinite supply of EOF tokens (never causing StopIteration).
 
-The TokStreamEnhancer does not depend on the `Tokenizer` class; it can be layed onto any iterator that provides a stream of arbitrary objects.
+The TokStreamEnhancer does not depend on the `Tokenizer` class; it can be layered onto any iterator that provides a stream of arbitrary objects.
 
 ## Using the Tokenizer
 
@@ -53,7 +53,7 @@ Anything that is an iterable of strings works as input:
 
 The input can also be None; `tokens()` can take optional input parameters instead, and `string_to_tokens()` works directly on a supplied string.
 
-The most common/simplest code uses the tokens() method which returns (generates) a sequence of Token objects from the input at initialization time:
+The most common/simplest code uses the tokens() method which returns (generates) a sequence of Token objects from the input specified at initialization time:
 
     with open('example-input', 'r') as f:
         for token in Tokenizer(rule_suite, f).tokens():
