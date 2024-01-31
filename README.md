@@ -319,8 +319,28 @@ Any number of token streams can be concatenated:
     for t in xz:
         print(t)
 
-
 This will print tokens from file1 followed by tokens from file2. Any number of token streams can be specified this way.
+
+There is no requirement the underlying tokstreams be a `Tokenizer` or even be anything more than iterables. For example, this works just fine:
+
+    xz = TokStreamEnhancer([1,2,3], [4,5,6])
+    t1 = xz.gettok()
+    t2 = xz.gettok()
+    t3, t4 = xz.peektoks(2)
+    xz.ungettok(t2)
+    t2b, t3b, t4b = xz.gettoks(3)
+
+    print(t1)
+    print(t2)
+    print(t3, t4)
+    print(t2b, t3b, t4b)
+    
+and outputs:
+
+    1
+    2
+    3 4
+    2 3 4
 
 # peek and unget
 
