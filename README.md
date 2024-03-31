@@ -444,7 +444,7 @@ To "accept" the tokens and stop the unwinding, invoke `acceptmarks()`:
     with xz.tokmark():
         t1 = xz.gettok()
         t2 = xz.gettok()
-	xz.acceptmarks()
+        xz.acceptmarks()
 
     print(xz.gettok() == t1)
 
