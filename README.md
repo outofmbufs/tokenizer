@@ -451,7 +451,7 @@ To "accept" the tokens and stop the unwinding, invoke `acceptmarks()`:
 Note that the `acceptmarks` affects the ENTIRE tokmark context. It does not matter whether tokens are gotten before or after the accept; what matters is whether or not an accept occurred ANYWHERE within the context. All tokens in that context will be accepted and not unwound when the context exits. This is equivalent:
 
     with xz.tokmark():
-	xz.acceptmarks()
+        xz.acceptmarks()
         t1 = xz.gettok()
         t2 = xz.gettok()
 
