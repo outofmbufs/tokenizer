@@ -388,7 +388,7 @@ There is no atomicity or other semantics implied by getting multiple tokens at o
 If the end of the (last) token stream is encountered during a peek or get, the behavior depends on some of the TokStreamEnhancer arguments, so this is a good time to look at those:
 
     class TokStreamEnhancer:
-    def __init__(self, *tokstreams, lasttok=None, eoftok=None):
+        def __init__(self, *tokstreams, lasttok=None, eoftok=None):
 
 The arguments are an arbitrary number of token streams, as already discussed, plus two other optional keyword arguments:
 
