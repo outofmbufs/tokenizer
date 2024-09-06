@@ -24,7 +24,8 @@ import re
 # A _MatchedInfo is created by the Tokenizer from each regexp match, and
 # passed to the corresponding TokenMatch.matched() for further processing.
 _MatchedInfo = namedtuple(
-    '_MatchedInfo', ['tokname', 'value', 'start', 'stop', 'tokenizer'])
+    '_MatchedInfo',
+    ['tokname', 'value', 'start', 'stop', 'tokenizer', 'factory'])
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
@@ -54,23 +55,16 @@ class TokenMatchIgnore(TokenMatch):
 class TokenMatchConvert(TokenMatch):
     """Type-convert the value field from string."""
 
-    # see the README for a discussion of why alt_tokname is sometimes useful
-    def __init__(self, *args, converter=int, alt_tokname=None, **kwargs):
+    def __init__(self, *args, converter=int, **kwargs):
         """A TokenMatch that applies a converter() function to the value.
-
-        Keyword arguments:
              converter:    will be applied to convert .value
-             alt_tokname:  if specified, changes the tokname (see README)
         """
         super().__init__(*args, **kwargs)
         self.converter = converter
-        self.alt_tokname = alt_tokname
 
     def matched(self, minfo, /):
         """Convert the value in this token (from string)."""
-        return minfo._replace(
-            value=self.converter(minfo.value),
-            tokname=self.alt_tokname or minfo.tokname)
+        return minfo._replace(value=self.converter(minfo.value))
 
 
 class TokenMatchInt(TokenMatchConvert):
@@ -181,18 +175,24 @@ class Tokenizer:
         tmsmap = self.__tmscvt(tms)
         self.TokenID = tokenIDs or self.create_tokenID_enum(tmsmap)
 
-        # each named rule gets a RuleInfo containing:
-        #      rx        - the fully-joined regexp
-        #      name2tms  - map a TokenMatch name back to the TokenMatch
-        RuleInfo = namedtuple('RuleInfo', ['rx', 'name2tms'])
+        # each named ruleset will become one regexp with a (?P=name)
+        # annotation for each individual regexp in it. The 'name' in
+        # those annotations is a "pname" and it is not the same as
+        # the tokname because toknames are allowed to be duplicated.
+        #
+        # A RuleInfo for each ruleset contains:
+        #    rx    - the fully-joined regexp
+        #    pmap  - map from pnames to TokenMatch objects (per ruleset)
+        #
+        RuleInfo = namedtuple('RuleInfo', ['rx', 'pmap'])
 
-        # Make a mapping from each rule name to its RuleInfo
-        self.rules = {
-            k: RuleInfo('|'.join(f'(?P<{r.tokname}>{r.regexp})'
-                                 for r in tms if r.regexp is not None),
-                        {tm.tokname: tm for tm in tms})
-            for k, tms in tmsmap.items()
-        }
+        self.rules = {}
+        for rulesetname, tms in tmsmap.items():
+            pmap = {f"PN{i:04d}": tm for i, tm in enumerate(tms)}
+            rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
+                          for pname, tm in pmap.items()
+                          if tm.regexp is not None)
+            self.rules[rulesetname] = RuleInfo(rx, pmap)
 
         self.strings = strings
         self.active_rulesname = None
@@ -219,14 +219,6 @@ class Tokenizer:
         if any([len(x) == 0 for x in tmsmap.values()]):
             raise ValueError("zero-length ruleset(s)")
 
-        # duplicate names in any single group of TokenMatch objects can cause
-        # truly head-scratching bugs so check for that.
-        for rulesetname, tms in tmsmap.items():
-            names = set()
-            for tm in tms:
-                if tm.tokname in names:
-                    raise ValueError(f"Duplicate tokname: {tm.tokname}")
-                names.add(tm.tokname)
         return tmsmap
 
     @classmethod
@@ -337,10 +329,11 @@ class Tokenizer:
             try:
                 id = self.TokenID[minfo.tokname]
             except KeyError:
-                pass
+                if minfo.tokname is not None:
+                    raise ValueError(f"unknown tokname ({minfo.tokname})")
             else:
                 loc = TokLoc(name, linenumber, minfo.start, minfo.stop)
-                yield Token(id, minfo.value, s, loc)
+                yield minfo.factory(id, minfo.value, s, loc)
 
         # If the expected_next_pos here is not the end of s then there
         # was something not matched along the way (or at the end)
@@ -367,13 +360,14 @@ class Tokenizer:
 
             so_far = mobj.end() + baseoffset   # end of processed chars
             minfo = _MatchedInfo(
-                tokname=mobj.lastgroup,
+                tokname=rules.pmap[mobj.lastgroup].tokname,
                 value=mobj.group(0),
                 start=mobj.start()+baseoffset,
                 stop=so_far,
-                tokenizer=self)
+                tokenizer=self,
+                factory=Token)
 
-            yield rules.name2tms[minfo.tokname].matched(minfo)
+            yield rules.pmap[mobj.lastgroup].matched(minfo)
 
 
 if __name__ == "__main__":
@@ -470,13 +464,17 @@ if __name__ == "__main__":
                     for name, t in zip(expected, toks):
                         self.assertEqual(tkz.TokenID[name], t.id)
 
-        # check that duplicated toknames are not allowed
+        # check that duplicated toknames are allowed
         def test_dups(self):
             rules = [TokenMatch('FOO', 'f'),
                      TokenMatch('BAR', 'b'),
                      TokenMatch('FOO', 'zzz')]
-            with self.assertRaises(ValueError):
-                tkz = Tokenizer(rules)
+            tkz = Tokenizer(rules)
+
+            expected = (('FOO', 'f'), ('BAR', 'b'), ('FOO', 'zzz'))
+            for token, ex in zip(tkz.string_to_tokens('fbzzz'), expected):
+                self.assertEqual(token.id, tkz.TokenID[ex[0]])
+                self.assertEqual(token.value, ex[1])
 
         # Example of multiple rule sets from README
         def test_ruleswitch(self):
