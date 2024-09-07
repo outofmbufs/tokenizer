@@ -37,18 +37,26 @@ class TokenMatch:
         self.regexp = regexp
 
         # fail early, because failing later is very confusing...
-        try:
-            _ = re.compile(regexp)
-        except re.error:
-            raise ValueError(
-                self.__class__.__name__ +
-                f" {tokname}, bad regexp: '{regexp}'") from None
+        if regexp is not None:
+            try:
+                _ = re.compile(regexp)
+            except re.error:
+                raise ValueError(
+                    self.__class__.__name__ +
+                    f" {tokname}, bad regexp: '{regexp}'") from None
 
     # Token-specific post processing on a match. This is a no-op; subclasses
     # will typically override with token-specific conversions/actions.
     def matched(self, minfo, /):
         """Return a _MatchedInfo based on the one given."""
         return minfo
+
+
+class TokenIDOnly(TokenMatch):
+    """Put a bare tokname into the TokenID Enum; no regexp"""
+    # no *args/**kwargs -  enforce "just a tokname and nothing else"
+    def __init__(self, tokname):
+        super().__init__(tokname, None)
 
 
 class TokenMatchIgnore(TokenMatch):
@@ -126,16 +134,13 @@ class TokenMatchRuleSwitch(TokenMatch):
 # A TokLoc is for error reporting, it describes the location in the
 # source stream a given Token was matched.
 TokLoc = namedtuple('TokLoc',
-                    ['source', 'line', 'start', 'end'],
-                    defaults=["unknown", None, 0, 0])
+                    ['s', 'sourcename', 'lineno', 'startpos', 'endpos'],
+                    defaults=["", "unknown", None, 0, 0])
 
 
-# A Token has a TokenID, a value, an "origin" which is the full string
-# (usually an entire line) containing the token and a TokLoc for more
-# details on match location.
-Token = namedtuple('Token',
-                   ['id', 'value', 'origin', 'location'],
-                   defaults=[None, None, TokLoc()])
+# A Token has a TokenID, a value, and a TokLoc.  The TokLoc contains the
+# source string and other position details useful for error reporting.
+Token = namedtuple('Token', ['id', 'value', 'location'])
 
 
 class Tokenizer:
@@ -145,7 +150,8 @@ class Tokenizer:
 
     def __init__(self, tms, strings=None, /, *,
                  srcname=None, startnum=_NOTGIVEN,
-                 tokenIDs=None):
+                 tokenIDs=None,
+                 tokenfactory=Token):
         """Set up a Tokenizer; see tokens() to generate tokens.
 
         Arguments:
@@ -168,7 +174,7 @@ class Tokenizer:
 
            srcname  -- for error reporting, but otherwise ignored.
                        Usually should be specified as the input file name.
-                       This eventually goes into the TokLocs as "source"
+                       This eventually goes into the TokLocs as "sourcename"
 
            startnum -- for error reporting, but otherwise ignored.
                        Each string in strings is assumed to be a separate
@@ -203,6 +209,7 @@ class Tokenizer:
             startnum = 1
         self.startnum = startnum
         self.srcname = srcname
+        self.tokenfactory = tokenfactory
 
     @staticmethod
     def __tmscvt(tms):
@@ -345,7 +352,7 @@ class Tokenizer:
             minfo = tm.matched(_MatchedInfo(tokname=tm.tokname,
                                             value=value,
                                             tokenizer=self,
-                                            factory=Token))
+                                            factory=self.tokenfactory))
 
             try:
                 id = self.TokenID[minfo.tokname]
@@ -353,8 +360,8 @@ class Tokenizer:
                 if minfo.tokname is not None:
                     raise ValueError(f"unknown tokname ({minfo.tokname})")
             else:
-                loc = TokLoc(name, linenumber, start, so_far)
-                yield minfo.factory(id, minfo.value, s, loc)
+                loc = TokLoc(s, name, linenumber, start, so_far)
+                yield minfo.factory(id, minfo.value, loc)
 
         # If the expected_next_pos here is not the end of s then there
         # was something not matched along the way (or at the end)
@@ -478,6 +485,18 @@ if __name__ == "__main__":
                 self.assertEqual(token.id, tkz.TokenID[ex[0]])
                 self.assertEqual(token.value, ex[1])
 
+        # Test naked tokenIDs (no regexp)
+        def test_tokIDonly(self):
+            rules = [
+                TokenMatch('CONSTANT', r'-?[0-9]+'),
+                TokenMatch('FOO', None),
+                TokenIDOnly('BAR')
+            ]
+            tkz = Tokenizer(rules)
+            self.assertTrue(hasattr(tkz.TokenID, 'FOO'))
+            self.assertTrue(hasattr(tkz.TokenID, 'BAR'))
+            self.assertTrue(hasattr(tkz.TokenID, 'CONSTANT'))
+
         # Example of multiple rule sets from README
         def test_ruleswitch(self):
 
@@ -511,5 +530,110 @@ if __name__ == "__main__":
                     self.assertEqual(token.value, '/@/')
                 else:
                     self.assertTrue(False)
+
+        # test the simplest, most-direct way to make a different Token()
+        def test_factory_1(self):
+            class MyToken:
+                def __init__(self, id, value, location, /):
+                    self.id = id
+                    self.value = value
+                    self.location = location
+            rules = [
+                TokenMatch('A', 'a'),
+            ]
+            tkz = Tokenizer(rules, tokenfactory=MyToken)
+            self.assertTrue(all(isinstance(t, MyToken)
+                                for t in tkz.string_to_tokens('a')))
+
+        # test the idea of subclassing TokenMatch to return a different
+        # factory. As a (likely useless in real life?) twist, this test
+        # demonstrates returning different types of Token objects depending
+        # on the match
+        def test_factory_2(self):
+            class MyToken_1:
+                def __init__(self, id, value, location, /):
+                    self.id = id
+                    self.value = value
+                    self.location = location
+
+            class MyToken_2:
+                def __init__(self, id, value, location, /):
+                    self.id = id
+                    self.value = value
+                    self.location = location
+
+            class TokenMatch_1(TokenMatch):
+                def matched(self, minfo, /):
+                    return minfo._replace(factory=MyToken_1)
+
+            class TokenMatch_2(TokenMatch):
+                def matched(self, minfo, /):
+                    return minfo._replace(factory=MyToken_2)
+
+            rules = [
+                TokenMatch('NATIVE', '0'),
+                TokenMatch_1('_1', '1'),
+                TokenMatch_2('_2', '2'),
+            ]
+
+            expected = [Token, MyToken_1, MyToken_2, Token]
+            tkz = Tokenizer(rules)
+            classes = [t.__class__ for t in tkz.string_to_tokens('0120')]
+            self.assertEqual(classes, expected)
+
+        # this elaborate example shows how to pass additional arguments
+        # into the custom Token object creation. It requires making another
+        # class, "MyMatchedInfo" here, to return as the minfo from the
+        # subclassed TokenMatch, so that its method (.factory) will be invoked
+        # to create the token object (and thereby have access to the instance
+        # variables established from MyTokenMatch)
+
+        def test_factory_3(self):
+
+            class MyToken:
+                # NOTE how this takes an extra argument, and how it
+                #      was supplied by the MyTokenMatch and propagated
+                #      by the MyMatchedInfo
+
+                def __init__(self, id, value, location, custom_arg):
+                    self.id = id
+                    self.value = value
+                    self.location = location
+                    self.custom_arg = custom_arg
+
+            class MyMatchedInfo:
+                def __init__(self, minfo, custom_arg):
+                    # this is being overly generalized; instead of
+                    # "knowing" the fields to copy use _asdict.
+                    # Of course, that "knows" minfo is a namedtuple;
+                    # however, that's also known by TokenMatch subclasses
+                    # because they generally rely on _replace()...
+                    for k, v in minfo._asdict().items():
+                        if k != 'factory':
+                            setattr(self, k, v)
+                    self.custom_arg = custom_arg
+                    self.minfo = minfo  # save orig for diagnostic purposes
+
+                def factory(self, id, value, location):
+                    return MyToken(id, value, location, self.custom_arg)
+
+            class MyTokenMatch(TokenMatch):
+                def __init__(self, *args, custom_arg, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.custom_arg = custom_arg
+
+                def matched(self, minfo, /):
+                    return MyMatchedInfo(minfo, self.custom_arg)
+
+            # Ok, now put that all together...
+            rules = [
+                MyTokenMatch('FOO', '1', custom_arg='bozo'),
+                MyTokenMatch('BAR', '2', custom_arg='krusty')
+            ]
+
+            expected = ['bozo', 'krusty', 'bozo']
+            tkz = Tokenizer(rules)
+            customs = [t.custom_arg for t in tkz.string_to_tokens('121')]
+            self.assertEqual(customs, expected)
 
     unittest.main()
