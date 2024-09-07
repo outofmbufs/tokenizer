@@ -363,8 +363,7 @@ class Tokenizer:
                 loc = TokLoc(s, name, linenumber, start, so_far)
                 yield minfo.factory(id, minfo.value, loc)
 
-        # If the expected_next_pos here is not the end of s then there
-        # was something not matched along the way (or at the end)
+        # If haven't made it to the end, something didn't match along the way
         if so_far != len(s):
             raise ValueError(f"unmatched @{so_far}, {s=}")
 
