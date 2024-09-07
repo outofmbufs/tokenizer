@@ -24,8 +24,7 @@ import re
 # A _MatchedInfo is created by the Tokenizer from each regexp match, and
 # passed to the corresponding TokenMatch.matched() for further processing.
 _MatchedInfo = namedtuple(
-    '_MatchedInfo',
-    ['tokname', 'value', 'start', 'stop', 'tokenizer', 'factory'])
+    '_MatchedInfo', ['tokname', 'value', 'tokenizer', 'factory'])
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
@@ -36,6 +35,14 @@ class TokenMatch:
     def __init__(self, tokname, regexp, /):
         self.tokname = tokname
         self.regexp = regexp
+
+        # fail early, because failing later is very confusing...
+        try:
+            _ = re.compile(regexp)
+        except re.error:
+            raise ValueError(
+                self.__class__.__name__ +
+                f" {tokname}, bad regexp: '{regexp}'") from None
 
     # Token-specific post processing on a match. This is a no-op; subclasses
     # will typically override with token-specific conversions/actions.
@@ -180,22 +187,18 @@ class Tokenizer:
         # those annotations is a "pname" and it is not the same as
         # the tokname because toknames are allowed to be duplicated.
         #
-        # A RuleInfo for each ruleset contains:
-        #    rx    - the fully-joined regexp
-        #    pmap  - map from pnames to TokenMatch objects (per ruleset)
-        #
-        RuleInfo = namedtuple('RuleInfo', ['rx', 'pmap'])
+        RuleSet = namedtuple('RuleSet', ['joined_rx', 'pmap', 'name'])
 
-        self.rules = {}
-        for rulesetname, tms in tmsmap.items():
+        self.rulesets = {}
+        for name, tms in tmsmap.items():
             pmap = {f"PN{i:04d}": tm for i, tm in enumerate(tms)}
-            rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
-                          for pname, tm in pmap.items()
-                          if tm.regexp is not None)
-            self.rules[rulesetname] = RuleInfo(rx, pmap)
+            joined_rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
+                                 for pname, tm in pmap.items()
+                                 if tm.regexp is not None)
+            self.rulesets[name] = RuleSet(joined_rx, pmap, name)
 
         self.strings = strings
-        self.active_rulesname = None
+        self.rules = self.rulesets[None]
         if startnum is self._NOTGIVEN:
             startnum = 1
         self.startnum = startnum
@@ -234,12 +237,12 @@ class Tokenizer:
 
     def activate_ruleset(self, newrule):
         if newrule == "_next":      # means 'go to next rule'
-            rulenames = list(self.rules)
-            current = rulenames.index(self.active_rulesname)
+            rulenames = list(self.rulesets)
+            current = rulenames.index(self.rules.name)
             nextindex = (current + 1) % len(rulenames)
-            self.active_rulesname = rulenames[nextindex]
+            self.rules = self.rulesets[rulenames[nextindex]]
         else:
-            self.active_rulesname = newrule
+            self.rules = self.rulesets[newrule]
 
     # convenience for use in case where strings that end with two
     # character sequence "backslash newline" should be combined with
@@ -315,59 +318,58 @@ class Tokenizer:
                 s, linenumber=i, name=self.srcname)
 
     def string_to_tokens(self, s, /, *, linenumber=None, name=None):
-        """GENERATE tokens from a string.
+        """Tokenize string 's', yield Tokens
 
-        Optional keyword argument linenumber will be put into error messages.
+           NOTE: optional keyword arguments linenumber and name are
+                 entirely for making a TokLoc for better error reporting.
         """
 
-        expected_next_pos = 0    # to catch unmatched characters
-        for minfo in self.run(s):
-            # make sure this match starts at the next expected character
-            if minfo.start != expected_next_pos:
+        so_far = 0
+        prevrules = None
+
+        # Note that TokenMatch objects can cause active_rulesname to change
+        # so the loop is written this way to accommodate that.
+        while True:
+            # this fires on any rules change AND ALSO the first time through
+            if prevrules is not self.rules:
+                prevrules = self.rules
+                g = re.finditer(self.rules.joined_rx, s[so_far:])
+                baseoffset = so_far
+
+            tm, value, startrel, stoprel = self._nextmatch(g)
+            start = startrel + baseoffset
+            if tm is None or start != so_far:
                 break
-            expected_next_pos = minfo.stop
+            so_far = stoprel + baseoffset   # end of processed chars in s
+
+            minfo = tm.matched(_MatchedInfo(tokname=tm.tokname,
+                                            value=value,
+                                            tokenizer=self,
+                                            factory=Token))
+
             try:
                 id = self.TokenID[minfo.tokname]
             except KeyError:
                 if minfo.tokname is not None:
                     raise ValueError(f"unknown tokname ({minfo.tokname})")
             else:
-                loc = TokLoc(name, linenumber, minfo.start, minfo.stop)
+                loc = TokLoc(name, linenumber, start, so_far)
                 yield minfo.factory(id, minfo.value, s, loc)
 
         # If the expected_next_pos here is not the end of s then there
         # was something not matched along the way (or at the end)
-        if expected_next_pos != len(s):
-            raise ValueError(f"unmatched @{expected_next_pos}, {s=}")
+        if so_far != len(s):
+            raise ValueError(f"unmatched @{so_far}, {s=}")
 
-    def run(self, s):
-        """Run the TokenRules on string 's', yield MatchInfo's."""
+    def _nextmatch(self, g):
+        """Support for string_to_tokens; returns next match and info"""
 
-        so_far = 0
-        rules = None
-
-        # Note that TokenMatch objects can cause active_rulesname to change
-        # so the loop is written this way to accommodate that.
-        while True:
-            if rules is not self.rules[self.active_rulesname]:
-                rules = self.rules[self.active_rulesname]
-                g = re.finditer(rules.rx, s[so_far:])
-                baseoffset = so_far
-            try:
-                mobj = next(g)
-            except StopIteration:
-                break
-
-            so_far = mobj.end() + baseoffset   # end of processed chars
-            minfo = _MatchedInfo(
-                tokname=rules.pmap[mobj.lastgroup].tokname,
-                value=mobj.group(0),
-                start=mobj.start()+baseoffset,
-                stop=so_far,
-                tokenizer=self,
-                factory=Token)
-
-            yield rules.pmap[mobj.lastgroup].matched(minfo)
+        try:
+            mobj = next(g)
+        except StopIteration:
+            return None, None, -1, -1
+        tm = self.rules.pmap[mobj.lastgroup]
+        return tm, mobj.group(0), mobj.start(), mobj.end()
 
 
 if __name__ == "__main__":
