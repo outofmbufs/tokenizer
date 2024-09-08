@@ -12,7 +12,7 @@ A simple tokenizer inspired by the example given in the python [re](https://docs
 
 ```
  - Automatically creates a `TokenID` Enum type from all of the token names given (e.g., the 'WHITESPACE', 'IDENTIFIER', etc above).
- - Defines a `Token` object containing an `id` (a `TokenID` Enum), a `value` (usually a string), and source location information (where it came from in the input). 
+ - Defines a `Token` object containing an `id` (a `TokenID` Enum), a `value` (usually a string), and source location information (where it came from in the input).
  - Generates a stream of `Token` objects from string inputs, which can come from file objects or indeed just be a string or an iterable of strings.
  - Provides some TokenMatch subclasses with additional capabilities, such as converting the `value` string to something more appropriate (e.g., `TokenMatchInt` which will convert the token string into an integer).
   - Can be extended for further custom token processing by subclassing TokenMatch.
@@ -91,7 +91,7 @@ To directly tokenize a specific string:
     tkz = Tokenizer(rules)
     for token in tkz.string_to_tokens("this   is\ninput 123"):
         print(token.id, repr(token.value))
-    
+
 resulting in this output:
 
     TokenID.IDENTIFIER 'this'
@@ -229,7 +229,7 @@ This will output:
     TokenID.IDENTIFIER 'a'
     TokenID.WHITESPACE ' '
     TokenID.IDENTIFIER 'test'
-        
+
 Using TokenMatchIgnore like this will discard WHITESPACE tokens:
 
     from tokenizer import TokenMatch, Tokenizer, TokenMatchIgnore
@@ -501,6 +501,73 @@ where the first line ends with "backslash newline", the output will be:
 
 Note that the backslash/newline has been completely filtered out by `linefilter` and a single IDENTIFIER that was "split" across that escaped line boundary has been produced. Applications can provide their own, more-elaborate, input filters if necessary.
 
+### Returning a different Token type (TokenID) in an action() method
+
+Consider this example set of rules:
+
+    rules = [
+        TokenMatch('CONSTANT', r'-?[0-9]+')
+        TokenMatchIgnore('WHITESPACE', r'\s+'),
+    ]
+
+Now suppose the requirement is that 16-bit values (whether signed or unsigned) become CONSTANT tokens but larger values become BIGNUM tokens. This can't really be specified via the regular expression, so some magic in an `action` is required.
+
+This is possible, by making a subclass of TokenMatch and using a provided `AltTokInfo` class for the `action` method return value. This code does all that:
+
+    from tokenizer import Tokenizer, _TInfo, AltTokInfo
+    from tokenizer import TokenMatch, TokenMatchIgnore, TokenIDOnly
+
+    class TokenMatchConstantOrBignum(TokenMatch):
+        # the default __init__() works just fine, only need an action:
+        def action(self, value, tkz, /):
+            value = int(value)
+            if value >= -32768 and value < 65536:
+                return _TInfo(value=value)    # it's ok as is
+
+            # instead of a CONSTANT, make a BIGNUM token
+            return AltTokInfo(value, 'BIGNUM', tkz.TokenID, tkz.tokenfactory)
+
+    rules = [
+        # This will return CONSTANT or BIGNUM tokens
+        TokenMatchConstantOrBignum('CONSTANT', r'-?[0-9]+'),
+
+        # this has to be in here so there *is* a token type 'BIGNUM'
+        TokenIDOnly('BIGNUM'),
+
+        # standard "ignore wnitespace"
+        TokenMatchIgnore('WHITESPACE', r'\s+'),
+    ]
+
+    tkz = Tokenizer(rules)
+    for t in tkz.string_to_tokens("-400 65535 65536 -1"):
+        print(t.id, t.value)
+
+This will output:
+
+    TokenID.CONSTANT -400
+    TokenID.CONSTANT 65535
+    TokenID.BIGNUM 65536
+    TokenID.CONSTANT -1
+
+Obviously this example is somewhat contrived, but the pattern will likely be useful for other real cases. To understand how it works, look at the AltTokInfo implementation (in the tokenizer module):
+
+    class AltTokInfo:
+        def __init__(self, value, alttokname, tokenID_enum, tokmaker):
+            self.value = value
+            self.alttokname = alttokname
+            self.tokenID_enum = tokenID_enum
+            self.tokmaker = tokmaker
+
+        def tokenfactory(self, tokid, value, location):
+            tokid = self.tokenID_enum[self.alttokname]
+            return self.tokmaker(tokid, value, location)
+
+The `action` routine of TokenMatchConstantOrBignum returns a normal (and simple) `_TInfo` object when the token type ('CONSTANT') doesn't need to be changed. In that case the framework will not find any `tokenfactory` attribute in the return object it gets from `action` and it will create a normal token in the usual way.
+
+But in the BIGNUM case, `action` returns an `AltTokInfo` object. The framework will find that `tokenfactory` method in that object, and call that in lieu of the normal tokenfactory (typically the Token() class). `AltTokInfo.tokenfactory` will still call that same class, of course, but first it gets the opportunity to fuss around with the arguments and so it can switch up the tokid to the one desired (BIGNUM).
+
+A variation of this technique is also useful for returning an entirely different class of Token if desired; see the next section.
+
 ### Using a different `Token`
 There are several ways to make the `Tokenizer` produce a different object than the built-in `Token` definition. The easiest is to supply keyword argument `tokenfactory` to `Tokenizer`:
 
@@ -508,7 +575,7 @@ There are several ways to make the `Tokenizer` produce a different object than t
         def __init__(self, tokid, value, location, /):
             self.id = tokid            # TokenID Enum element
             self.value = value         # from the TokenMatch
-            self.location = location   # TokLoc info 
+            self.location = location   # TokLoc info
 
     from tokenizer import TokenMatch, Tokenizer
 
@@ -529,7 +596,7 @@ Output:
 The framework will also look for an alternate tokenfactory in the `_TInfo` returned by `action` methods. Therefore another way to create an alternate token object would be to subclass `TokenMatch` (and its subclasses as necessary) and have them set the tokenfactory attribute of a `_TInfo` as appropriate. This opens the door to having one TokenMatch subclass create token objects of an entirely different class than another TokenMatch (whether that is a good idea or not is up for debate of course).
 
 A more elaborate scheme would also have those TokenMatch subclasses return something other than the built-in _TInfo object; the framework simply requires that object to have a `tokenfactory` attribute and will ultimately invoke it like this:
-    
+
     # for illustrative purpose; some code details left out
     tinfo = tm.action(value, self)
     if tinfo is None:       # None means ignore this token
@@ -539,7 +606,7 @@ A more elaborate scheme would also have those TokenMatch subclasses return somet
     yield factory(tokid, tinfo.value, loc)
 
 so if the `action` method returns a custom object with at least a `tokenfactory` and `value` attribute, it can regain control of token creation via the `tokenfactory` invocation. One reason to do this is if there are additional parameters that need to be passed from the "rules" (the sequence of TokenMatch subclass objects) down to the eventual token creation calls themselves.
-				    
+
 Examples of all three of these ideas can be found in the unittest code.
 
 
@@ -576,7 +643,7 @@ There is no requirement the underlying tokstreams be a `Tokenizer` or even be an
     print(t2)
     print(t3, t4)
     print(t2b, t3b, t4b)
-    
+
 and outputs:
 
     1
@@ -647,7 +714,7 @@ These two arguments allow for several different ways to handle the end of the to
  - If only a `lasttok` was specified, then after the last token from the last of the tokstreams has been given out, the next token will be `lasttok`. After `lasttok` has been given out (i.e., by gettok), StopIteration will be raised by peektok or gettok.
  - If only an `eoftok` was specified, then instead of raising StopIteration that token will be returned, indefinitely (i.e., repeatedly) for peektok/gettok, once the last of the tokstreams has been exhausted.
  - If both `lasttok` and `eoftok` are specified, then the two semantics are combined in the obvious way.
- 
+
 ## EOF testing
 
    no_more_tokens = xz.at_eof()
@@ -710,4 +777,3 @@ It is possible to nest contexts, though programmers are cautioned that the seman
     t4 = xz.gettok()
 
 Figuring out what tokens `t3` and `t4` are is left as an exercise for the programmer.
-
