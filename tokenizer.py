@@ -21,14 +21,37 @@ import re
 #                     type of each individual Token (i.e., what it matched)
 
 
-# A _MatchedInfo is created by the Tokenizer from each regexp match, and
-# passed to the corresponding TokenMatch.matched() for further processing.
-_MatchedInfo = namedtuple(
-    '_MatchedInfo', ['tokname', 'value', 'tokenizer', 'factory'])
+# A _TInfo is created by the the action() method in each TokenMatch,
+# which is invoked each time a regexp match occurs. This is an opportunity
+# for the TokenMatch to alter the value, and optionally divert to a
+# different token factory.
+
+_TInfo = namedtuple('_TInfo', ['value', 'tokenfactory'], defaults=[None])
+
+
+# This is available for use when an action() method needs to
+# entirely switch out the token type that is being created.
+# To use:
+#    in the action() method instead of returning a _TInfo, return:
+#
+#     AltTokInfo(value, 'ALTNAME', tkz.tokenID, tkz.tokenfactory)
+#
+#    which will cause a token of type ALTNAME to be created
+#
+class AltTokInfo:
+    def __init__(self, value, alttokname, tokenID_enum, tokmaker):
+        self.value = value
+        self.alttokname = alttokname
+        self.tokenID_enum = tokenID_enum
+        self.tokmaker = tokmaker
+
+    def tokenfactory(self, tokid, value, location):
+        tokid = self.tokenID_enum[self.alttokname]
+        return self.tokmaker(tokid, value, location)
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
-# expression (e.g., r'-?[0-9]+'), and its matched() method is part of
+# expression (e.g., r'-?[0-9]+'), and its action() method is part of
 # how subclasses can extend functionality (see docs or read examples below).
 
 class TokenMatch:
@@ -47,9 +70,8 @@ class TokenMatch:
 
     # Token-specific post processing on a match. This is a no-op; subclasses
     # will typically override with token-specific conversions/actions.
-    def matched(self, minfo, /):
-        """Return a _MatchedInfo based on the one given."""
-        return minfo
+    def action(self, value, tkz, /):
+        return _TInfo(value=value)
 
 
 class TokenIDOnly(TokenMatch):
@@ -62,9 +84,9 @@ class TokenIDOnly(TokenMatch):
 class TokenMatchIgnore(TokenMatch):
     """TokenMatch that eats tokens (i.e., matches and ignores them)."""
 
-    def matched(self, minfo, /):
+    def action(self, value, tkz, /):
         """Cause this token to be ignored."""
-        return minfo._replace(tokname=None)  # tokname=None means "ignore"
+        return None
 
 
 class TokenMatchConvert(TokenMatch):
@@ -77,9 +99,9 @@ class TokenMatchConvert(TokenMatch):
         super().__init__(*args, **kwargs)
         self.converter = converter
 
-    def matched(self, minfo, /):
+    def action(self, value, tkz, /):
         """Convert the value in this token (from string)."""
-        return minfo._replace(value=self.converter(minfo.value))
+        return _TInfo(value=self.converter(value))
 
 
 class TokenMatchInt(TokenMatchConvert):
@@ -114,11 +136,11 @@ class TokenMatchIgnoreButKeep(TokenMatch):
         super().__init__(tokname, regexp, *args, **kwargs)
         self.keep = keep
 
-    def matched(self, minfo, /):
-        if self.keep in minfo.value:
-            return minfo._replace(value=self.keep)
+    def action(self, value, tkz, /):
+        if self.keep in value:
+            return _TInfo(value=self.keep)
         else:
-            return minfo._replace(tokname=None)
+            return None
 
 
 class TokenMatchRuleSwitch(TokenMatch):
@@ -126,9 +148,9 @@ class TokenMatchRuleSwitch(TokenMatch):
         super().__init__(*args, **kwargs)
         self.new_rulename = new_rulename
 
-    def matched(self, minfo, /):
-        minfo.tokenizer.activate_ruleset(self.new_rulename)
-        return minfo
+    def action(self, value, tkz, /):
+        tkz.activate_ruleset(self.new_rulename)
+        return _TInfo(value=value)
 
 
 # A TokLoc is for error reporting, it describes the location in the
@@ -347,21 +369,17 @@ class Tokenizer:
             start = startrel + baseoffset
             if tm is None or start != so_far:
                 break
+
+            tokid = self.TokenID[tm.tokname]
             so_far = stoprel + baseoffset   # end of processed chars in s
+            loc = TokLoc(s, name, linenumber, start, so_far)
 
-            minfo = tm.matched(_MatchedInfo(tokname=tm.tokname,
-                                            value=value,
-                                            tokenizer=self,
-                                            factory=self.tokenfactory))
+            tinfo = tm.action(value, self)
+            if tinfo is None:       # None means ignore this token
+                continue
 
-            try:
-                id = self.TokenID[minfo.tokname]
-            except KeyError:
-                if minfo.tokname is not None:
-                    raise ValueError(f"unknown tokname ({minfo.tokname})")
-            else:
-                loc = TokLoc(s, name, linenumber, start, so_far)
-                yield minfo.factory(id, minfo.value, loc)
+            factory = tinfo.tokenfactory or self.tokenfactory
+            yield factory(tokid, tinfo.value, loc)
 
         # If haven't made it to the end, something didn't match along the way
         if so_far != len(s):
@@ -562,12 +580,12 @@ if __name__ == "__main__":
                     self.location = location
 
             class TokenMatch_1(TokenMatch):
-                def matched(self, minfo, /):
-                    return minfo._replace(factory=MyToken_1)
+                def action(self, value, tkz, /):
+                    return _TInfo(value=value, tokenfactory=MyToken_1)
 
             class TokenMatch_2(TokenMatch):
-                def matched(self, minfo, /):
-                    return minfo._replace(factory=MyToken_2)
+                def action(self, value, tkz, /):
+                    return _TInfo(value=value, tokenfactory=MyToken_2)
 
             rules = [
                 TokenMatch('NATIVE', '0'),
@@ -600,29 +618,21 @@ if __name__ == "__main__":
                     self.location = location
                     self.custom_arg = custom_arg
 
-            class MyMatchedInfo:
-                def __init__(self, minfo, custom_arg):
-                    # this is being overly generalized; instead of
-                    # "knowing" the fields to copy use _asdict.
-                    # Of course, that "knows" minfo is a namedtuple;
-                    # however, that's also known by TokenMatch subclasses
-                    # because they generally rely on _replace()...
-                    for k, v in minfo._asdict().items():
-                        if k != 'factory':
-                            setattr(self, k, v)
+            class MyTInfo:
+                def __init__(self, value, custom_arg):
+                    self.value = value
                     self.custom_arg = custom_arg
-                    self.minfo = minfo  # save orig for diagnostic purposes
 
-                def factory(self, id, value, location):
-                    return MyToken(id, value, location, self.custom_arg)
+                def tokenfactory(self, tokid, value, location):
+                    return MyToken(tokid, value, location, self.custom_arg)
 
             class MyTokenMatch(TokenMatch):
                 def __init__(self, *args, custom_arg, **kwargs):
                     super().__init__(*args, **kwargs)
                     self.custom_arg = custom_arg
 
-                def matched(self, minfo, /):
-                    return MyMatchedInfo(minfo, self.custom_arg)
+                def action(self, value, tkz, /):
+                    return MyTInfo(value, self.custom_arg)
 
             # Ok, now put that all together...
             rules = [
