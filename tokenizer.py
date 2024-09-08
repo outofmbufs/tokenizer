@@ -21,8 +21,15 @@ import re
 #                     type of each individual Token (i.e., what it matched)
 
 
-# A TokLoc is for error reporting, it describes the location in the
-# source stream a given Token was matched.
+# A TokLoc describes a source location; for error reporting purposes.
+#    s          -- Entire string (i.e., typically an input line)
+#    sourcename -- Name of the input source as was given to the
+#                  tokenizer (when created/invoked). CAN BE None.
+#    lineno     -- Line number, counted from the start lineno given
+#                  to the tokenizer. CAN BE None (means no line numbers)
+#    startpos   -- Index with s where the error occurred.
+#    endpos     -- ONE PAST the end of the error (i.e., the "next" position)
+#
 TokLoc = namedtuple('TokLoc',
                     ['s', 'sourcename', 'lineno', 'startpos', 'endpos'],
                     defaults=["", "unknown", None, 0, 0])
@@ -34,6 +41,12 @@ Token = namedtuple('Token', ['id', 'value', 'location'], defaults=[TokLoc()])
 
 class Tokenizer:
     """Break streams into tokens with rules from regexps."""
+
+    # This exception is raised when the input doesn't match any rules
+    class MatchError(Exception):
+        def __init__(self, *args, location=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.location = location
 
     def __init__(self, tms, strings=None, /, *,
                  srcname=None, startnum=1,
@@ -252,7 +265,8 @@ class Tokenizer:
 
         # If haven't made it to the end, something didn't match along the way
         if so_far != len(s):
-            raise ValueError(f"unmatched @{so_far}, {s=}")
+            loc = TokLoc(s, name, linenumber, so_far, so_far)
+            raise self.MatchError(f"unmatched @{so_far}, {s=}", location=loc)
 
     def _nextmatch(self, g):
         """Support for string_to_tokens; returns next match and info"""
@@ -437,6 +451,50 @@ if __name__ == "__main__":
 
             for id, t in zip(expected, tkz):
                 self.assertEqual(id, t.id)
+
+        def test_lines(self):
+            rules = [TokenMatch('A', 'a'),
+                     TokenMatch('B', 'b'),
+                     TokenMatch('C', 'c')]
+            tkz = Tokenizer(rules, ["aba", "cab"], )
+            expected = [
+                (tkz.TokenID.A, 1, 0),
+                (tkz.TokenID.B, 1, 1),
+                (tkz.TokenID.A, 1, 2),
+                (tkz.TokenID.C, 2, 0),
+                (tkz.TokenID.A, 2, 1),
+                (tkz.TokenID.B, 2, 2),
+            ]
+            for x, t in zip(expected, tkz):
+                tokid, lineno, startpos = x
+                self.assertEqual(tokid, t.id)
+                self.assertEqual(t.location.lineno, lineno)
+                self.assertEqual(t.location.startpos, startpos)
+                # just knows each test is 1 char
+                self.assertEqual(t.location.endpos, startpos+1)
+
+        def test_nomatch(self):
+            rules = [TokenMatch('A', 'a'),
+                     TokenMatch('B', 'b')]
+            lines = ["ab", "baxb"]
+            tkz = Tokenizer(rules, lines, startnum=0)
+            expected = [
+                tkz.TokenID.A,
+                tkz.TokenID.B,
+                tkz.TokenID.B,
+                tkz.TokenID.A,
+                None,
+            ]
+            g = tkz.tokens()
+            for expected_id in expected:
+                try:
+                    t = next(g)
+                except Tokenizer.MatchError as e:
+                    # should be the 'x' in the reported lineno
+                    c = lines[e.location.lineno][e.location.startpos]
+                    self.assertEqual(c, 'x')
+                else:
+                    self.assertEqual(expected_id, t.id)
 
         # C comment example
         def test_C(self):
