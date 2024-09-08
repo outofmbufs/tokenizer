@@ -14,13 +14,13 @@ A simple tokenizer inspired by the example given in the python [re](https://docs
  - Automatically creates a `TokenID` Enum type from all of the token names given (e.g., the 'WHITESPACE', 'IDENTIFIER', etc above).
  - Defines a `Token` object containing an `id` (a `TokenID` Enum), a `value` (usually a string), and source location information (where it came from in the input). 
  - Generates a stream of `Token` objects from string inputs, which can come from file objects or indeed just be a string or an iterable of strings.
- - Provides some TokenMatch subclasses with additional capabilities, such as converting the `value` string to something more appropriate (e.g., an integer for a string of digits match).
+ - Provides some TokenMatch subclasses with additional capabilities, such as converting the `value` string to something more appropriate (e.g., `TokenMatchInt` which will convert the token string into an integer).
   - Can be extended for further custom token processing by subclassing TokenMatch.
  - Can switch rule sets triggered by specific tokens for modal tokenizing.
 
 There is also a TokStreamEnhancer providing:
- - Concatenation of multiple input streams
- - N-level "peek" / "unget"
+ - Concatenation of multiple input streams.
+ - N-level "peek" / "unget".
  - A way to remember ("mark") a spot in the token stream and, if desired, unget tokens ("unwind") all the way back to that point.
  - Two more ways (beyond just StopIteration) to handle EOF: a one-time EOF token prior to the StopIteration, or an infinite supply of EOF tokens (never causing StopIteration).
 
@@ -113,10 +113,10 @@ A Tokenizer object has an attribute, `TokenID`, containing an Enum used for toke
         TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
         TokenMatch('CONSTANT', r'-?[0-9]+'),
     ]
-    tkz = Tokenizer(rules, open('example-input', 'r'))
+    tkz = Tokenizer(rules)
     print(tkz.TokenID)
-    for id in tkz.TokenID:
-        print(f"  {id!r}")
+    for tokid in tkz.TokenID:
+        print(f"  {tokid!r}")
 
 This will output:
 
@@ -136,8 +136,8 @@ Some applications may need token types defined without any match; this can be sp
     ]
     tkz = Tokenizer(rules)
     print(tkz.TokenID)
-    for id in tkz.TokenID:
-        print(f"  {id!r}")
+    for tokid in tkz.TokenID:
+        print(f"  {tokid!r}")
 
 
 Output:
@@ -152,7 +152,7 @@ Applications can call (classmethod) `create_tokenID_enum` directly to create a T
 
     ids = Tokenizer.create_tokenID_enum(rules)
 
-in which case `ids` will be the Enum. That Enum (or one constructed entirely custom by the application) can be passed into `Tokenizer` for use in lieu of generating a different one again. Here is an example with a hand-build Enum for token IDs:
+in which case `ids` will be the Enum. That Enum (or one constructed entirely custom by the application) can be passed into `Tokenizer` for use in lieu of it automatically creating one. Here is an example with a hand-build Enum for token IDs:
 
     from tokenizer import TokenMatch, Tokenizer
     from enum import Enum
@@ -169,8 +169,8 @@ in which case `ids` will be the Enum. That Enum (or one constructed entirely cus
 
     tkz = Tokenizer(rules, tokenIDs=Foo)
     print(tkz.TokenID)
-    for id in tkz.TokenID:
-        print(f"  {id!r}")
+    for tokid in tkz.TokenID:
+        print(f"  {tokid!r}")
 
 which will output:
 
@@ -194,7 +194,7 @@ These, and how to write custom classes, will be described next.
 
 ### TokenIDOnly
 
-This was already shown in an example earlier. This allows an application to create additional token types (i.e., elements of the TokenID Enum) that it may create on its own but will have no corresponding regular expression to match:
+This was already shown in an example earlier. This allows an application to create additional token types (i.e., elements of the TokenID Enum) that the application may need for other purposes but will have no corresponding regular expression to match:
 
     from tokenizer import TokenIDOnly, Tokenizer
     rules = [
@@ -284,14 +284,14 @@ Converts the value attribute of a token to an integer, and is most-obviously use
         TokenMatch('EQUALS', r'='),
     ]
     tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("foo=17"):
+    for token in tkz.string_to_tokens("foo=-17"):
         print(token.id, repr(token.value))
 
 will output:
 
     TokenID.IDENTIFIER 'foo'
     TokenID.EQUALS '='
-    TokenID.CONSTANT 17
+    TokenID.CONSTANT -17
 
 Notice that the `value` attribute of the CONSTANT is now an integer, not a string, as a result of matching the `TokenMatchInt` rule.
 
@@ -321,6 +321,7 @@ Output:
     TokenID.CONSTANT 42
     TokenID.CONSTANT 255
 
+This example shows another feature - it's allowed for more than one TokenMatch to have the same `tokname` (and thus produce the same type of Token). In this case that makes the regular expression simpler versus trying to capture the two alternative formats for octal and decimal in one regular expression and then having a single conversion function that must handle both.
 
 ### TokenMatchKeyword
 
@@ -346,61 +347,46 @@ Note that no regular expression should (generally) be given to `TokenMatchKeywor
     TokenID.THEN 'then'
     TokenID.IDENTIFIER 'that'
 
-__NOTE__: When working with regular expressions, order of presentation matters (this is true also of the examples given in the python 're' module on which this whole exercise is based). If the more-general IDENTIFIER rule appears before the less-general 'if' or 'while' keyword rule, those keywords will appear as IDENTIFIERs instead. This is just how the re-based matching works.
+__NOTE__: When working with regular expressions, order of presentation matters (this is true also of the examples given in the python 're' module on which this whole exercise is based). In this example it is important the keyword matches appear in the rules prior to the more-general identifier match (which would otherwise match and consume the keywords before they were seen as keywords). This is just a side-effect of the underlying use re-based matching.
+
 
 ## Writing custom TokenMatch subclasses
 
-To write other TokenMatch enhancments, create a subclass and override one or both of these methods:
+To write other TokenMatch enhancements, create a subclass and override one or both of these methods:
 
     def __init__(self, tokname, regexp, /):
         ...
 
-    def matched(self, minfo, /):
+    def action(self, value, tkz, /):
         ...
 
-The `matched` method is called when the framework has a regexp match, and is passed in the argument `minfo` which is a `_MatchedInfo` namedtuple. The `matched` method is expected to return this `_MatchedInfo`, possibly with modifications.
+The `action` method is called when the framework has a regexp match. Two arguments are passed in: `value` which will be the (string) value from the match, and `tkz` which is the Tokenizer object itself (used/needed by some specialized subclasses).
 
-A `matched` method in a subclass can change either or both of these `minfo` fields:
+The `action` method is expected to return any namespace-like object that has at least two attributes:
+ - `value` -- this is the (possibly modified) value that will be put into the token.
+ - `tokenfactory` -- if not None, this will be invoked to create the token. If None, defaults to the tokenfactory set up in the Tokenizer itself.
 
- - tokname
- - value
+For convenience, a simple namedtuple `_TInfo` is provided; the examples below will demonstrate that.
 
-If `tokname` is set to None, this matched token will be ignored. This is how, for example `TokenMatchIgnore` works ... the entirety of that implementation is shown here:
+If an `action` method wants the token ignored, it can return None. Otherwise it should return a `_TInfo` or something duck-typing as a `_TInfo`.
 
-    class TokenMatchIgnore(TokenMatch):
-        def matched(self, minfo, /):
-            return minfo._replace(tokname=None)
-
-Similarly, the entirety of `TokenMatchIgnoreButKeep` is:
+As an example, the entirety of `TokenMatchIgnoreButKeep` is:
 
     class TokenMatchIgnoreButKeep(TokenMatch):
         def __init__(self, tokname, regexp, *args, keep, **kwargs):
             super().__init__(tokname, regexp, *args, **kwargs)
             self.keep = keep
 
-        def matched(self, minfo, /):
-            if self.keep in minfo.value:
-                return minfo._replace(value=self.keep)
+        def action(self, value, tkz, /):
+            if self.keep in value:
+                return _TInfo(value=self.keep)
             else:
-                return minfo._replace(tokname=None)
+                return None
 
-which shows the recommended way to add more (keyword) arguments to the init function and use *args/**kwargs to protect against future signature revisions.
-
-The subclass can also change `tokname` to something other than None, in which case that becomes the token type that will be instantiated. Refer back to the example of OCTAL_CONSTANT and `TokenMatchConvert`; here is the source code showing how that works:
-
-
-    class TokenMatchConvert(TokenMatch):
-        def __init__(self, *args, converter=int, alt_tokname=None, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.converter = converter
-            self.alt_tokname = alt_tokname
-
-        def matched(self, minfo, /):
-            return minfo._replace(
-                value=self.converter(minfo.value),
-                tokname=self.alt_tokname or minfo.tokname)
-
-Note that if alt_tokname has been given it is used to replace the tokname (as written - for notational convenience - the above code always replaces the tokname field it just replaces it with itself if no alt_tokname was given).
+This shows several points:
+ - the recommended way to add more (keyword) arguments to the init function and use *args/**kwargs to protect against future signature revisions.
+ - The use of "return None" to cause a token to be ignored
+ - Modifying the `value` and returning it via a `_TInfo` instance.
 
 
 ## Multiple TokenMatch rulesets
@@ -443,6 +429,24 @@ This will output:
 In this example sometimes 'z' is a ZEE, and sometimes a ZED, depending on which ruleset has been activated. The `TokenMatchRuleSwitch` subclass takes a `new_rulename` argument and switches the active ruleset accordingly.
 
 There can be any number of rulesets with arbitrary names, but one of the rulesets must always have None (the python object, not a string 'None') as its name. That is the default/primary ruleset and the one that is first active when processing begins. NOTE: in the earlier examples where a sequence of TokenMatch objects was passed in, not a mapping, internally they were converted into a one-deep mapping from None to the given sequence.
+
+In other words:
+
+    rules = [
+        TokenMatch('EQUALS', '=')
+    ]
+    tkz = Tokenizer(rules)
+
+and
+
+    rules = [
+        TokenMatch('EQUALS', '=')
+    ]
+    tkz = Tokenizer({None: rules})
+
+are equivalent.
+
+
 
 If no `new_rulename` is given to TokenMatchRuleSwitch then it cycles through the rules in (dictionary - as defined) order, wrapping around from the end back to the front. What this means is that in a simple case such as the above, it's not even necessary to specify `new_rulename` and a bare TokenMatchRuleSwitch will just switch back and forth. Thus, this works if substituted for the group1/group2 initializations:
 
@@ -501,8 +505,8 @@ Note that the backslash/newline has been completely filtered out by `linefilter`
 There are several ways to make the `Tokenizer` produce a different object than the built-in `Token` definition. The easiest is to supply keyword argument `tokenfactory` to `Tokenizer`:
 
     class MyToken:
-        def __init__(self, id, value, location, /):
-            self.id = id               # TokenID Enum
+        def __init__(self, tokid, value, location, /):
+            self.id = tokid            # TokenID Enum element
             self.value = value         # from the TokenMatch
             self.location = location   # TokLoc info 
 
@@ -522,19 +526,19 @@ Output:
     MyToken TokenID.B 'b'
     MyToken TokenID.A 'a'
 
-The framework passes the token factory into `matched` method invocations (via attribute `factory` in the `_MatchedInfo` argument). Therefore another way to create an alternate token object would be to subclass `TokenMatch` (and its subclasses as necessary) and have them _replace the `factory` attribute as needed.
+The framework will also look for an alternate tokenfactory in the `_TInfo` returned by `action` methods. Therefore another way to create an alternate token object would be to subclass `TokenMatch` (and its subclasses as necessary) and have them set the tokenfactory attribute of a `_TInfo` as appropriate. This opens the door to having one TokenMatch subclass create token objects of an entirely different class than another TokenMatch (whether that is a good idea or not is up for debate of course).
 
-A more elaborate scheme would also have those TokenMatch subclasses return something other than the built-in _MatchedInfo object; the framework simply requires that object to have a `factory` attribute and will ultimately invoke it like this:
+A more elaborate scheme would also have those TokenMatch subclasses return something other than the built-in _TInfo object; the framework simply requires that object to have a `tokenfactory` attribute and will ultimately invoke it like this:
     
     # for illustrative purpose; some code details left out
-    minfo = tm.matched(_MatchedInfo(tokname=tm.tokname,
-                                    value=value,
-                                    tokenizer=self,
-                                    factory=self.tokenfactory))
-    .. code elided that finds 'id' and creates 'loc' etc .. then:
-    token = minfo.factory(id, minfo.value, loc)
+    tinfo = tm.action(value, self)
+    if tinfo is None:       # None means ignore this token
+        continue
 
-so if the `TokenMatch` subclass `matched` method returns a custom object with at least a `factory` and `value` attribute, it can regain control of token creation via the `factory` invocation.
+    factory = tinfo.tokenfactory or self.tokenfactory
+    yield factory(tokid, tinfo.value, loc)
+
+so if the `action` method returns a custom object with at least a `tokenfactory` and `value` attribute, it can regain control of token creation via the `tokenfactory` invocation. One reason to do this is if there are additional parameters that need to be passed from the "rules" (the sequence of TokenMatch subclass objects) down to the eventual token creation calls themselves.
 				    
 Examples of all three of these ideas can be found in the unittest code.
 
