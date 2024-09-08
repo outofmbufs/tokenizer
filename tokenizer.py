@@ -21,7 +21,6 @@ import re
 #                     type of each individual Token (i.e., what it matched)
 
 
-
 # A TokLoc is for error reporting, it describes the location in the
 # source stream a given Token was matched.
 TokLoc = namedtuple('TokLoc',
@@ -30,16 +29,14 @@ TokLoc = namedtuple('TokLoc',
 
 # A Token has a TokenID, a value, and a TokLoc.  The TokLoc contains the
 # source string and other position details useful for error reporting.
-Token = namedtuple('Token', ['id', 'value', 'location'])
+Token = namedtuple('Token', ['id', 'value', 'location'], defaults=[TokLoc()])
 
 
 class Tokenizer:
     """Break streams into tokens with rules from regexps."""
 
-    _NOTGIVEN = object()
-
     def __init__(self, tms, strings=None, /, *,
-                 srcname=None, startnum=_NOTGIVEN,
+                 srcname=None, startnum=1,
                  tokenIDs=None,
                  tokenfactory=Token):
         """Set up a Tokenizer; see tokens() to generate tokens.
@@ -95,8 +92,6 @@ class Tokenizer:
 
         self.strings = strings
         self.rules = self.rulesets[None]
-        if startnum is self._NOTGIVEN:
-            startnum = 1
         self.startnum = startnum
         self.srcname = srcname
         self.tokenfactory = tokenfactory
@@ -193,14 +188,20 @@ class Tokenizer:
     def __iter__(self):
         return self.tokens()
 
+    _NOTGIVEN = object()     # None is valid for some tokens() args
+
     def tokens(self, strings=None, /, *,
                srcname=_NOTGIVEN, startnum=_NOTGIVEN):
         """GENERATE tokens for the entire file.
 
         strings/srcname/startnum arguments same as for __init__().
         """
+
         if strings is not None:
             self.strings = strings
+
+        # Only clobber the __init__ values if these explicitly given.
+        # Note that None is a legitimate value, hence the "_NOTGIVEN" object
         if srcname is not self._NOTGIVEN:
             self.srcname = srcname
         if startnum is not self._NOTGIVEN:
@@ -262,6 +263,7 @@ class Tokenizer:
             return None, None, -1, -1
         tm = self.rules.pmap[mobj.lastgroup]
         return tm, mobj.group(0), mobj.start(), mobj.end()
+
 
 # A _TInfo is created by the the action() method in each TokenMatch,
 # which is invoked each time a regexp match occurs. This is an opportunity
@@ -393,12 +395,6 @@ class TokenMatchRuleSwitch(TokenMatch):
     def action(self, value, tkz, /):
         tkz.activate_ruleset(self.new_rulename)
         return _TInfo(value=value)
-
-
-
-
-
-
 
 
 if __name__ == "__main__":
