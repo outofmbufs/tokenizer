@@ -21,144 +21,12 @@ import re
 #                     type of each individual Token (i.e., what it matched)
 
 
-# A _TInfo is created by the the action() method in each TokenMatch,
-# which is invoked each time a regexp match occurs. This is an opportunity
-# for the TokenMatch to alter the value, and optionally divert to a
-# different token factory.
-
-_TInfo = namedtuple('_TInfo', ['value', 'tokenfactory'], defaults=[None])
-
-
-# This is available for use when an action() method needs to
-# entirely switch out the token type that is being created.
-# To use:
-#    in the action() method instead of returning a _TInfo, return:
-#
-#     AltTokInfo(value, 'ALTNAME', tkz.tokenID, tkz.tokenfactory)
-#
-#    which will cause a token of type ALTNAME to be created
-#
-class AltTokInfo:
-    def __init__(self, value, alttokname, tokenID_enum, tokmaker):
-        self.value = value
-        self.alttokname = alttokname
-        self.tokenID_enum = tokenID_enum
-        self.tokmaker = tokmaker
-
-    def tokenfactory(self, tokid, value, location):
-        tokid = self.tokenID_enum[self.alttokname]
-        return self.tokmaker(tokid, value, location)
-
-
-# A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
-# expression (e.g., r'-?[0-9]+'), and its action() method is part of
-# how subclasses can extend functionality (see docs or read examples below).
-
-class TokenMatch:
-    def __init__(self, tokname, regexp, /):
-        self.tokname = tokname
-        self.regexp = regexp
-
-        # fail early, because failing later is very confusing...
-        if regexp is not None:
-            try:
-                _ = re.compile(regexp)
-            except re.error:
-                raise ValueError(
-                    self.__class__.__name__ +
-                    f" {tokname}, bad regexp: '{regexp}'") from None
-
-    # Token-specific post processing on a match. This is a no-op; subclasses
-    # will typically override with token-specific conversions/actions.
-    def action(self, value, tkz, /):
-        return _TInfo(value=value)
-
-
-class TokenIDOnly(TokenMatch):
-    """Put a bare tokname into the TokenID Enum; no regexp"""
-    # no *args/**kwargs -  enforce "just a tokname and nothing else"
-    def __init__(self, tokname):
-        super().__init__(tokname, None)
-
-
-class TokenMatchIgnore(TokenMatch):
-    """TokenMatch that eats tokens (i.e., matches and ignores them)."""
-
-    def action(self, value, tkz, /):
-        """Cause this token to be ignored."""
-        return None
-
-
-class TokenMatchConvert(TokenMatch):
-    """Type-convert the value field from string."""
-
-    def __init__(self, *args, converter=int, **kwargs):
-        """A TokenMatch that applies a converter() function to the value.
-             converter:    will be applied to convert .value
-        """
-        super().__init__(*args, **kwargs)
-        self.converter = converter
-
-    def action(self, value, tkz, /):
-        """Convert the value in this token (from string)."""
-        return _TInfo(value=self.converter(value))
-
-
-class TokenMatchInt(TokenMatchConvert):
-    """Just for clarity; equivalent to TokenMatchConvert w/no kwargs."""
-
-    def __init__(self, *args):
-        super().__init__(*args)
-
-
-class TokenMatchKeyword(TokenMatch):
-    """For keywords. Just specify the keyword no regexp.
-       Example:
-
-            TokenMatchKeyword('if')
-
-       is equivalent to:
-
-            TokenMatch('IF', r'(if)[^a-zA-Z_0-9]*')
-    """
-    def __init__(self, tokname, regexp=None, *args, **kwargs):
-        if regexp is None:
-            regexp = self.keyword_regexp(tokname)
-        super().__init__(tokname.upper(), regexp, *args, **kwargs)
-
-    # broken out so can be overridden if application has other syntax
-    def keyword_regexp(self, tokname):
-        return f"({tokname})(?![a-zA-Z0-9_])"
-
-
-class TokenMatchIgnoreButKeep(TokenMatch):
-    def __init__(self, tokname, regexp, *args, keep, **kwargs):
-        super().__init__(tokname, regexp, *args, **kwargs)
-        self.keep = keep
-
-    def action(self, value, tkz, /):
-        if self.keep in value:
-            return _TInfo(value=self.keep)
-        else:
-            return None
-
-
-class TokenMatchRuleSwitch(TokenMatch):
-    def __init__(self, *args, new_rulename="_next", **kwargs):
-        super().__init__(*args, **kwargs)
-        self.new_rulename = new_rulename
-
-    def action(self, value, tkz, /):
-        tkz.activate_ruleset(self.new_rulename)
-        return _TInfo(value=value)
-
 
 # A TokLoc is for error reporting, it describes the location in the
 # source stream a given Token was matched.
 TokLoc = namedtuple('TokLoc',
                     ['s', 'sourcename', 'lineno', 'startpos', 'endpos'],
                     defaults=["", "unknown", None, 0, 0])
-
 
 # A Token has a TokenID, a value, and a TokLoc.  The TokLoc contains the
 # source string and other position details useful for error reporting.
@@ -394,6 +262,143 @@ class Tokenizer:
             return None, None, -1, -1
         tm = self.rules.pmap[mobj.lastgroup]
         return tm, mobj.group(0), mobj.start(), mobj.end()
+
+# A _TInfo is created by the the action() method in each TokenMatch,
+# which is invoked each time a regexp match occurs. This is an opportunity
+# for the TokenMatch to alter the value, and optionally divert to a
+# different token factory.
+
+_TInfo = namedtuple('_TInfo', ['value', 'tokenfactory'], defaults=[None])
+
+
+# This is available for use when an action() method needs to
+# entirely switch out the token type that is being created.
+# To use:
+#    in the action() method instead of returning a _TInfo, return:
+#
+#     AltTokInfo(value, 'ALTNAME', tkz.tokenID, tkz.tokenfactory)
+#
+#    which will cause a token of type ALTNAME to be created
+#
+class AltTokInfo:
+    def __init__(self, value, alttokname, tokenID_enum, tokmaker):
+        self.value = value
+        self.alttokname = alttokname
+        self.tokenID_enum = tokenID_enum
+        self.tokmaker = tokmaker
+
+    def tokenfactory(self, tokid, value, location):
+        tokid = self.tokenID_enum[self.alttokname]
+        return self.tokmaker(tokid, value, location)
+
+
+# A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
+# expression (e.g., r'-?[0-9]+'), and its action() method is part of
+# how subclasses can extend functionality (see docs or read examples below).
+
+class TokenMatch:
+    def __init__(self, tokname, regexp, /):
+        self.tokname = tokname
+        self.regexp = regexp
+
+        # fail early, because failing later is very confusing...
+        if regexp is not None:
+            try:
+                _ = re.compile(regexp)
+            except re.error:
+                raise ValueError(
+                    self.__class__.__name__ +
+                    f" {tokname}, bad regexp: '{regexp}'") from None
+
+    # Token-specific post processing on a match. This is a no-op; subclasses
+    # will typically override with token-specific conversions/actions.
+    def action(self, value, tkz, /):
+        return _TInfo(value=value)
+
+
+class TokenIDOnly(TokenMatch):
+    """Put a bare tokname into the TokenID Enum; no regexp"""
+    # no *args/**kwargs -  enforce "just a tokname and nothing else"
+    def __init__(self, tokname):
+        super().__init__(tokname, None)
+
+
+class TokenMatchIgnore(TokenMatch):
+    """TokenMatch that eats tokens (i.e., matches and ignores them)."""
+
+    def action(self, value, tkz, /):
+        """Cause this token to be ignored."""
+        return None
+
+
+class TokenMatchConvert(TokenMatch):
+    """Type-convert the value field from string."""
+
+    def __init__(self, *args, converter=int, **kwargs):
+        """A TokenMatch that applies a converter() function to the value.
+             converter:    will be applied to convert .value
+        """
+        super().__init__(*args, **kwargs)
+        self.converter = converter
+
+    def action(self, value, tkz, /):
+        """Convert the value in this token (from string)."""
+        return _TInfo(value=self.converter(value))
+
+
+class TokenMatchInt(TokenMatchConvert):
+    """Just for clarity; equivalent to TokenMatchConvert w/no kwargs."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+
+
+class TokenMatchKeyword(TokenMatch):
+    """For keywords. Just specify the keyword no regexp.
+       Example:
+
+            TokenMatchKeyword('if')
+
+       is equivalent to:
+
+            TokenMatch('IF', r'(if)[^a-zA-Z_0-9]*')
+    """
+    def __init__(self, tokname, regexp=None, *args, **kwargs):
+        if regexp is None:
+            regexp = self.keyword_regexp(tokname)
+        super().__init__(tokname.upper(), regexp, *args, **kwargs)
+
+    # broken out so can be overridden if application has other syntax
+    def keyword_regexp(self, tokname):
+        return f"({tokname})(?![a-zA-Z0-9_])"
+
+
+class TokenMatchIgnoreButKeep(TokenMatch):
+    def __init__(self, tokname, regexp, *args, keep, **kwargs):
+        super().__init__(tokname, regexp, *args, **kwargs)
+        self.keep = keep
+
+    def action(self, value, tkz, /):
+        if self.keep in value:
+            return _TInfo(value=self.keep)
+        else:
+            return None
+
+
+class TokenMatchRuleSwitch(TokenMatch):
+    def __init__(self, *args, new_rulename="_next", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.new_rulename = new_rulename
+
+    def action(self, value, tkz, /):
+        tkz.activate_ruleset(self.new_rulename)
+        return _TInfo(value=value)
+
+
+
+
+
+
 
 
 if __name__ == "__main__":
