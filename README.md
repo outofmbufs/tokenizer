@@ -372,7 +372,7 @@ The simplest subclasses are just conversions from matched value string to someth
     #
     class TokenMatchIntExample(TokenMatch):
         def _value(self, val, /):
-	    return int(val)
+            return int(val)
 
 
 If the subclass needs more control, it can override `action` (and may also need to override init if there are additional parameters required). Here is the actual implementation of TokenMatchIgnoreButKeep:
