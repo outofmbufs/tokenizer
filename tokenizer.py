@@ -344,7 +344,7 @@ class TokenMatchConvert(TokenMatch):
 
 
 class TokenMatchInt(TokenMatchConvert):
-    """Just for clarity; equivalent to TokenMatchConvert w/no kwargs."""
+    """Converts values to integers. Special case of TokenMatchConvert."""
 
     def __init__(self, *args):      # exists solely to enforce no kwargs
         super().__init__(*args)
@@ -371,8 +371,8 @@ class TokenMatchKeyword(TokenMatch):
 
 
 class TokenMatchIgnoreButKeep(TokenMatch):
-    def __init__(self, tokname, regexp, *args, keep, **kwargs):
-        super().__init__(tokname, regexp, *args, **kwargs)
+    def __init__(self, *args, keep, **kwargs):
+        super().__init__(*args, **kwargs)
         self.keep = keep
 
     def action(self, val, loc, tkz, /):
