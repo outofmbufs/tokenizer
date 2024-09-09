@@ -418,11 +418,12 @@ if __name__ == "__main__":
                 TokenMatchInt('CONSTANT', r'-?[0-9]+'),
             ]
 
-            s = "    abc123 def    ghi_jkl     123456\n"
+            s = "    abc123 def  \n\n  ghi_jkl     123456\n"
             tkz = Tokenizer(rules, [s])
             expected_IDvals = [
                 (tkz.TokenID.IDENTIFIER, 'abc123'),
                 (tkz.TokenID.IDENTIFIER, 'def'),
+                (tkz.TokenID.NEWLINE, '\n'),
                 (tkz.TokenID.IDENTIFIER, 'ghi_jkl'),
                 (tkz.TokenID.CONSTANT, 123456),
                 (tkz.TokenID.NEWLINE, '\n')
