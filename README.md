@@ -69,7 +69,6 @@ and, given this example-input file:
 
 outputs:
 
-    TokenID.WHITESPACE '    '
     TokenID.IDENTIFIER 'abc123'
     TokenID.WHITESPACE ' '
     TokenID.IDENTIFIER 'def'
@@ -321,7 +320,7 @@ Output:
     TokenID.CONSTANT 42
     TokenID.CONSTANT 255
 
-This example shows another feature - it's allowed for more than one TokenMatch to have the same `tokname` (and thus produce the same type of Token). In this case that makes the regular expression simpler versus trying to capture the two alternative formats for octal and decimal in one regular expression and then having a single conversion function that must handle both.
+This example shows another feature - the same `tokname` can appear in more than one TokenMatch. Sometimes that's advantageous as a way to simplify the individual regular expressions rather than having a single, multi-clause, regular expression for two different formats. As this example shows it also makes it easy to have per-format processing details.
 
 ### TokenMatchKeyword
 
@@ -352,42 +351,49 @@ __NOTE__: When working with regular expressions, order of presentation matters (
 
 ## Writing custom TokenMatch subclasses
 
-To write other TokenMatch enhancements, create a subclass and override one or both of these methods:
+Writing custom TokenMatch classes is straightforward; create a subclass that overrides any (or all) of these methods:
 
     def __init__(self, tokname, regexp, /):
-        ...
 
-    def action(self, value, tkz, /):
-        ...
+    def _value(self, val, /):
+         INPUT: val - the matched string
+       RETURNS: a converted value (e.g.: int(val) etc)
 
-The `action` method is called when the framework has a regexp match. Two arguments are passed in: `value` which will be the (string) value from the match, and `tkz` which is the Tokenizer object itself (used/needed by some specialized subclasses).
+    def action(self, val, loc, tkz, /):
+        INPUTS: val - the matched string
+                loc - TokLoc token location info (for error reporting)
+                tkz - The Tokenizer object itself
+       RETURNS: A token, or None (to discard this match)
 
-The `action` method is expected to return any namespace-like object that has at least two attributes:
- - `value` -- this is the (possibly modified) value that will be put into the token.
- - `tokenfactory` -- if not None, this will be invoked to create the token. If None, defaults to the tokenfactory set up in the Tokenizer itself.
+The simplest subclasses are just conversions from matched value string to something else. They only need to override `_value`. For example, here is one way to implement the TokenMatchInt subclass:
 
-For convenience, a simple namedtuple `_TInfo` is provided; the examples below will demonstrate that.
+    # NOTE: The real implementation of TokenMatchInt is done as
+    #       a special case of TokenMatchConvert
+    #
+    class TokenMatchIntExample(TokenMatch):
+        def _value(self, val, /):
+	    return int(val)
 
-If an `action` method wants the token ignored, it can return None. Otherwise it should return a `_TInfo` or something duck-typing as a `_TInfo`.
 
-As an example, the entirety of `TokenMatchIgnoreButKeep` is:
+If the subclass needs more control, it can override `action` (and may also need to override init if there are additional parameters required). Here is the actual implementation of TokenMatchIgnoreButKeep:
+
 
     class TokenMatchIgnoreButKeep(TokenMatch):
-        def __init__(self, tokname, regexp, *args, keep, **kwargs):
-            super().__init__(tokname, regexp, *args, **kwargs)
+        def __init__(self, *args, keep, **kwargs):
+            super().__init__(*args, **kwargs)
             self.keep = keep
 
-        def action(self, value, tkz, /):
-            if self.keep in value:
-                return _TInfo(value=self.keep)
+        def action(self, val, loc, tkz, /):
+            if self.keep in val:
+                return super().action(self.keep, loc, tkz)
             else:
                 return None
 
-This shows several points:
- - the recommended way to add more (keyword) arguments to the init function and use *args/**kwargs to protect against future signature revisions.
- - The use of "return None" to cause a token to be ignored
- - Modifying the `value` and returning it via a `_TInfo` instance.
+The init method takes an extra argument, `keep`, which it stores into the object so `action` will have it when needed. This code also shows the recommended way of handling the other arguments and passing them to super() in a way that minimizes dependencies on the framework signatures.
 
+The `action` method returns None if the `keep` character is not in the string value (`val`). Returning None instead of returning a token makes the framework discard this match; no token gets generated. If the `keep` is in the `val` string, then a token is generated and this is done by using super() to let the base ('TokenMatch') class handle the details of that. Note, however, that instead of passing the `val` (the string CONTAINING one or more `keep` characters) it passes just the `keep` character, so the token will have (just) that as its value.
+
+Perusing the implementations of the various TokenMatch subclasses already provided, plus also looking at some of the unittest code, is the best way to get a more detailed understand if writing a complicated TokenMatch subclass.
 
 ## Multiple TokenMatch rulesets
 
@@ -400,12 +406,12 @@ For example:
 
     group1 = [
         TokenMatch('ZEE', r'z'),
-        TokenMatchRuleSwitch('ALTRULES', r'/', new_rulename='ALT')
+        TokenMatchRuleSwitch('ALTRULES', r'/', rulename='ALT')
     ]
 
     group2 = [
         TokenMatch('ZED', r'z'),
-        TokenMatchRuleSwitch('MAINRULES', r'/', new_rulename=None)
+        TokenMatchRuleSwitch('MAINRULES', r'/', rulename=None)
     ]
 
     # NOTE: None (as a ruleset "name") must always be present.
@@ -426,7 +432,7 @@ This will output:
     TokenID.MAINRULES '/'
     TokenID.ZEE 'z'
 
-In this example sometimes 'z' is a ZEE, and sometimes a ZED, depending on which ruleset has been activated. The `TokenMatchRuleSwitch` subclass takes a `new_rulename` argument and switches the active ruleset accordingly.
+In this example sometimes 'z' is a ZEE, and sometimes a ZED, depending on which ruleset has been activated. The `TokenMatchRuleSwitch` subclass takes a `rulename` argument and switches the active ruleset accordingly.
 
 There can be any number of rulesets with arbitrary names, but one of the rulesets must always have None (the python object, not a string 'None') as its name. That is the default/primary ruleset and the one that is first active when processing begins. NOTE: in the earlier examples where a sequence of TokenMatch objects was passed in, not a mapping, internally they were converted into a one-deep mapping from None to the given sequence.
 
@@ -448,7 +454,7 @@ are equivalent.
 
 
 
-If no `new_rulename` is given to TokenMatchRuleSwitch then it cycles through the rules in (dictionary - as defined) order, wrapping around from the end back to the front. What this means is that in a simple case such as the above, it's not even necessary to specify `new_rulename` and a bare TokenMatchRuleSwitch will just switch back and forth. Thus, this works if substituted for the group1/group2 initializations:
+If no `rulename` is given to TokenMatchRuleSwitch then it cycles through the rules in (dictionary - as defined) order, wrapping around from the end back to the front. What this means is that in a simple case such as the above, it's not even necessary to specify `rulename` and a bare TokenMatchRuleSwitch will just switch back and forth. Thus, this works if substituted for the group1/group2 initializations:
 
     group1 = [
         TokenMatch('ZEE', r'z'),
@@ -503,73 +509,72 @@ Note that the backslash/newline has been completely filtered out by `linefilter`
 
 ### Returning a different Token type (TokenID) in an action() method
 
-Consider this example set of rules:
+This set of rules:
 
     rules = [
-        TokenMatch('CONSTANT', r'-?[0-9]+')
+        TokenMatch('CONSTANT', r'1b[01]+'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
     ]
 
-Now suppose the requirement is that 16-bit values (whether signed or unsigned) become CONSTANT tokens but larger values become BIGNUM tokens. This can't really be specified via the regular expression, so some magic in an `action` is required.
+recognizes two different types of constants, the usual decimal digit format but also binary representations such as `1b0`, `1b101`, etc.
 
-This is possible, by making a subclass of TokenMatch and using a provided `AltTokInfo` class for the `action` method return value. This code does all that:
+Suppose the application wants to specifically recognize binary constants that were given in the `1b` syntax AND that fit into one byte, and have them become BINARYBYTE tokens (all other constants, `1b` or not, remain CONSTANT tokens).
 
-    from tokenizer import Tokenizer, _TInfo, AltTokInfo
-    from tokenizer import TokenMatch, TokenMatchIgnore, TokenIDOnly
+The base TokenMatch subclass `action` implementation accepts an optional keyword argument, `name`, which allows overriding the `tokname` attribute in the object itself. Using this feature, a custom `TokenMatchBinaryByte` subclass looks like this:
 
-    class TokenMatchConstantOrBignum(TokenMatch):
-        # the default __init__() works just fine, only need an action:
-        def action(self, value, tkz, /):
-            value = int(value)
-            if value >= -32768 and value < 65536:
-                return _TInfo(value=value)    # it's ok as is
+    class TokenMatchBinaryByte(TokenMatch):
+        def action(self, val, loc, tkz, /):
+            b = int(val[2:], 2)     # 2: to skip the '1b'
+            alttokname = None if b > 255 else 'BINARYBYTE'
+            return super().action(b, loc, tkz, name=alttokname)
 
-            # instead of a CONSTANT, make a BIGNUM token
-            return AltTokInfo(value, 'BIGNUM', tkz.TokenID, tkz.tokenfactory)
+If the value is too big then `alttokname` is None and the base class `action` will return a CONSTANT token (because that is what is in the object's `tokname`). However, if the converted value is 255 or less then a BINARYBYTE token will be returned instead.
+
+With this subclass, the rules will look like this:
 
     rules = [
-        # This will return CONSTANT or BIGNUM tokens
-        TokenMatchConstantOrBignum('CONSTANT', r'-?[0-9]+'),
-
-        # this has to be in here so there *is* a token type 'BIGNUM'
-        TokenIDOnly('BIGNUM'),
-
-        # standard "ignore wnitespace"
+        TokenMatchBinaryByte('CONSTANT', r'1b[01]+'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
+        TokenIDOnly('BINARYBYTE'),
+    ]
+
+Note that `TokenIDOnly` is being used to introduce the BINARYBYTE token which appears to have no rule (but `TokenMatchBinaryByte` will create such tokens when appropriate).
+
+Putting this all together:
+
+    from tokenizer import Tokenizer, TokenMatchInt
+    from tokenizer import TokenMatch, TokenMatchIgnore, TokenIDOnly
+
+    class TokenMatchBinaryByte(TokenMatch):
+        def action(self, val, loc, tkz, /):
+            b = int(val[2:], 2)     # 2: to skip the '1b'
+            alttokname = None if b > 255 else 'BINARYBYTE'
+            return super().action(b, loc, tkz, name=alttokname)
+
+    rules = [
+        TokenMatchBinaryByte('CONSTANT', r'1b[01]+'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+        TokenMatchIgnore('WHITESPACE', r'\s+'),
+        TokenIDOnly('BINARYBYTE'),
     ]
 
     tkz = Tokenizer(rules)
-    for t in tkz.string_to_tokens("-400 65535 65536 -1"):
-        print(t.id, t.value)
+    for t in tkz.string_to_tokens(r'1b0 1b100100100 1b111 42'):
+        print(t.id, repr(t.value))
 
-This will output:
+will output:
 
-    TokenID.CONSTANT -400
-    TokenID.CONSTANT 65535
-    TokenID.BIGNUM 65536
-    TokenID.CONSTANT -1
+    TokenID.BINARYBYTE 0
+    TokenID.CONSTANT 292
+    TokenID.BINARYBYTE 7
+    TokenID.CONSTANT 42
 
-Obviously this example is somewhat contrived, but the pattern will likely be useful for other real cases. To understand how it works, look at the AltTokInfo implementation (in the tokenizer module):
-
-    class AltTokInfo:
-        def __init__(self, value, alttokname, tokenID_enum, tokmaker):
-            self.value = value
-            self.alttokname = alttokname
-            self.tokenID_enum = tokenID_enum
-            self.tokmaker = tokmaker
-
-        def tokenfactory(self, tokid, value, location):
-            tokid = self.tokenID_enum[self.alttokname]
-            return self.tokmaker(tokid, value, location)
-
-The `action` routine of TokenMatchConstantOrBignum returns a normal (and simple) `_TInfo` object when the token type ('CONSTANT') doesn't need to be changed. In that case the framework will not find any `tokenfactory` attribute in the return object it gets from `action` and it will create a normal token in the usual way.
-
-But in the BIGNUM case, `action` returns an `AltTokInfo` object. The framework will find that `tokenfactory` method in that object, and call that in lieu of the normal tokenfactory (typically the Token() class). `AltTokInfo.tokenfactory` will still call that same class, of course, but first it gets the opportunity to fuss around with the arguments and so it can switch up the tokid to the one desired (BIGNUM).
-
-A variation of this technique is also useful for returning an entirely different class of Token if desired; see the next section.
+A variation of this technique is also useful for returning an entirely different __class__ of Token if desired; see the next section.
 
 ### Using a different `Token`
-There are several ways to make the `Tokenizer` produce a different object than the built-in `Token` definition. The easiest is to supply keyword argument `tokenfactory` to `Tokenizer`:
+There are several ways to make the `Tokenizer` produce a different object than the built-in `Token` definition. The easiest is to supply keyword argument `tokentype` to `Tokenizer`:
 
     class MyToken:
         def __init__(self, tokid, value, location, /):
@@ -583,7 +588,7 @@ There are several ways to make the `Tokenizer` produce a different object than t
         TokenMatch('A', 'a'),
         TokenMatch('B', 'b')
     ]
-    tkz = Tokenizer(rules, tokenfactory=MyToken)
+    tkz = Tokenizer(rules, tokentype=MyToken)
     for t in tkz.string_to_tokens('bba'):
         print(t.__class__.__name__, t.id, repr(t.value))
 
@@ -593,21 +598,9 @@ Output:
     MyToken TokenID.B 'b'
     MyToken TokenID.A 'a'
 
-The framework will also look for an alternate tokenfactory in the `_TInfo` returned by `action` methods. Therefore another way to create an alternate token object would be to subclass `TokenMatch` (and its subclasses as necessary) and have them set the tokenfactory attribute of a `_TInfo` as appropriate. This opens the door to having one TokenMatch subclass create token objects of an entirely different class than another TokenMatch (whether that is a good idea or not is up for debate of course).
+Another way is to simply not use the base class `action` and write a custom `action` method that creates tokens any way it wants to.
 
-A more elaborate scheme would also have those TokenMatch subclasses return something other than the built-in _TInfo object; the framework simply requires that object to have a `tokenfactory` attribute and will ultimately invoke it like this:
-
-    # for illustrative purpose; some code details left out
-    tinfo = tm.action(value, self)
-    if tinfo is None:       # None means ignore this token
-        continue
-
-    factory = tinfo.tokenfactory or self.tokenfactory
-    yield factory(tokid, tinfo.value, loc)
-
-so if the `action` method returns a custom object with at least a `tokenfactory` and `value` attribute, it can regain control of token creation via the `tokenfactory` invocation. One reason to do this is if there are additional parameters that need to be passed from the "rules" (the sequence of TokenMatch subclass objects) down to the eventual token creation calls themselves.
-
-Examples of all three of these ideas can be found in the unittest code.
+Examples of various ideas like this can be found in the source, be sure to also look at the unittest code.
 
 
 # TokStreamEnhancer
