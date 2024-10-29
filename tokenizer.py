@@ -445,6 +445,44 @@ if __name__ == "__main__":
                 self.assertEqual(t.id, id)
                 self.assertEqual(t.value, val)
 
+        def test_motley(self):
+            # per the README.md file
+            rules_yes = [
+                TokenMatch('IDENTIFIER', TokenMatch.unicode_identifier_re),
+                TokenMatchIgnore('WHITESPACE', r'\s+'),
+            ]
+            s = "MötleyCrüe foo"
+            tkz = Tokenizer(rules_yes, [s])
+            expected_IDvals = [
+                (tkz.TokenID.IDENTIFIER, 'MötleyCrüe'),
+                (tkz.TokenID.IDENTIFIER, 'foo'),
+            ]
+
+            for x, t in zip(expected_IDvals, tkz.tokens()):
+                id, val = x
+                self.assertEqual(t.id, id)
+                self.assertEqual(t.value, val)
+
+            rules_no = [
+                TokenMatch('IDENTIFIER', TokenMatch.ascii_identifier_re),
+                TokenMatchIgnore('WHITESPACE', r'\s+'),
+                TokenMatch('DEBRIS', '.')
+            ]
+            tkz = Tokenizer(rules_no, [s])
+            expected_IDvals = [
+                (tkz.TokenID.IDENTIFIER, 'M'),
+                (tkz.TokenID.DEBRIS, 'ö'),
+                (tkz.TokenID.IDENTIFIER, 'tleyCr'),
+                (tkz.TokenID.DEBRIS, 'ü'),
+                (tkz.TokenID.IDENTIFIER, 'e'),
+                (tkz.TokenID.IDENTIFIER, 'foo'),
+            ]
+
+            for x, t in zip(expected_IDvals, tkz.tokens()):
+                id, val = x
+                self.assertEqual(t.id, id)
+                self.assertEqual(t.value, val)
+
         def test_iter(self):
             rules = [TokenMatch('A', 'a'),
                      TokenMatch('B', 'b')]
