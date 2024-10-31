@@ -288,10 +288,20 @@ class Tokenizer:
 # processing the match and creating the token.
 
 class TokenMatch:
-    # these two regular expressions are often useful and tricky to get right.
-    # So they are provided here for convenience.
-    unicode_identifier_re = r'[^\W\d]\w*'
-    ascii_identifier_re = r'[A-Za-z_][A-Za-z_0-9]*'
+
+    # A few convenience-variables useful for "identifier" style regexps
+
+    # This unicode regexp is from (mash this into one long URL):
+    #   https://stackoverflow.com/questions/1673749/
+    #           how-to-match-alphabetical-chars-without-
+    #           numeric-chars-with-python-regexp
+    #
+    id_unicode = r'[^\W\d]\w*'
+    id_unicode_no_under = r'[^\W\d_][^\W_]*'
+
+    # The ASCII versions are traditional/easy
+    id_ascii = r'[A-Za-z_][A-Za-z_0-9]*'
+    id_ascii_no_under = r'[A-Za-z][A-Za-z0-9]*'
 
     def __init__(self, tokname, regexp, /):
         self.tokname = tokname
@@ -368,7 +378,7 @@ class TokenMatchKeyword(TokenMatch):
 
             TokenMatch('IF', r'(if)(magic)
 
-       where 'magic' is "not the TokenMatch.unicode_identifier_re
+       where 'magic' is "not the TokenMatch.id_unicode
     """
     def __init__(self, tokname, regexp=None, *args, **kwargs):
         if regexp is None:
@@ -377,7 +387,7 @@ class TokenMatchKeyword(TokenMatch):
 
     # broken out so can be overridden if application has other syntax
     def keyword_regexp(self, tokname):
-        return f"({tokname})(?!{TokenMatch.unicode_identifier_re})"
+        return f"({tokname})(?!{TokenMatch.id_unicode})"
 
 
 class TokenMatchIgnoreButKeep(TokenMatch):
@@ -424,7 +434,7 @@ if __name__ == "__main__":
         def test1(self):
             rules = [
                 TokenMatchIgnoreButKeep('NEWLINE', r'\s+', keep='\n'),
-                TokenMatch('IDENTIFIER', TokenMatch.unicode_identifier_re),
+                TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
                 TokenMatchInt('CONSTANT', r'-?[0-9]+'),
             ]
 
@@ -445,43 +455,63 @@ if __name__ == "__main__":
                 self.assertEqual(t.id, id)
                 self.assertEqual(t.value, val)
 
-        def test_motley(self):
-            # per the README.md file
-            rules_yes = [
-                TokenMatch('IDENTIFIER', TokenMatch.unicode_identifier_re),
-                TokenMatchIgnore('WHITESPACE', r'\s+'),
-            ]
-            s = "MötleyCrüe foo"
-            tkz = Tokenizer(rules_yes, [s])
-            expected_IDvals = [
-                (tkz.TokenID.IDENTIFIER, 'MötleyCrüe'),
-                (tkz.TokenID.IDENTIFIER, 'foo'),
-            ]
+        def test_identifiers(self):
+            # various combinations of the "identifier" expressions provided
 
-            for x, t in zip(expected_IDvals, tkz.tokens()):
-                id, val = x
-                self.assertEqual(t.id, id)
-                self.assertEqual(t.value, val)
+            s = "MötleyCrüe 4_foo_bar77"
+            testvectors = (
+                #   (RULES, EXPECTED)
+                ((TokenMatch('ID', TokenMatch.id_unicode),
+                  TokenMatchIgnore('WHITESPACE', r'\s+'),
+                  TokenMatch('DEBRIS', '.')),
+                 (('ID', 'MötleyCrüe'),
+                  ('DEBRIS', '4'),
+                  ('ID', '_foo_bar77'))
+                 ),
+                ((TokenMatch('ID', TokenMatch.id_unicode_no_under),
+                  TokenMatchIgnore('WHITESPACE', r'\s+'),
+                  TokenMatch('DEBRIS', '.')),
+                 (('ID', 'MötleyCrüe'),
+                  ('DEBRIS', '4'),
+                  ('DEBRIS', '_'),
+                  ('ID', 'foo'),
+                  ('DEBRIS', '_'),
+                  ('ID', 'bar77'))
+                 ),
+                ((TokenMatch('ID', TokenMatch.id_ascii),
+                  TokenMatchIgnore('WHITESPACE', r'\s+'),
+                  TokenMatch('DEBRIS', '.')),
+                 (('ID', 'M'),
+                  ('DEBRIS', 'ö'),
+                  ('ID', 'tleyCr'),
+                  ('DEBRIS', 'ü'),
+                  ('ID', 'e'),
+                  ('DEBRIS', '4'),
+                  ('ID', '_foo_bar77'))
+                 ),
+                ((TokenMatch('ID', TokenMatch.id_ascii_no_under),
+                  TokenMatchIgnore('WHITESPACE', r'\s+'),
+                  TokenMatch('DEBRIS', '.')),
+                 (('ID', 'M'),
+                  ('DEBRIS', 'ö'),
+                  ('ID', 'tleyCr'),
+                  ('DEBRIS', 'ü'),
+                  ('ID', 'e'),
+                  ('DEBRIS', '4'),
+                  ('DEBRIS', '_'),
+                  ('ID', 'foo'),
+                  ('DEBRIS', '_'),
+                  ('ID', 'bar77'))
+                 )
+            )
 
-            rules_no = [
-                TokenMatch('IDENTIFIER', TokenMatch.ascii_identifier_re),
-                TokenMatchIgnore('WHITESPACE', r'\s+'),
-                TokenMatch('DEBRIS', '.')
-            ]
-            tkz = Tokenizer(rules_no, [s])
-            expected_IDvals = [
-                (tkz.TokenID.IDENTIFIER, 'M'),
-                (tkz.TokenID.DEBRIS, 'ö'),
-                (tkz.TokenID.IDENTIFIER, 'tleyCr'),
-                (tkz.TokenID.DEBRIS, 'ü'),
-                (tkz.TokenID.IDENTIFIER, 'e'),
-                (tkz.TokenID.IDENTIFIER, 'foo'),
-            ]
-
-            for x, t in zip(expected_IDvals, tkz.tokens()):
-                id, val = x
-                self.assertEqual(t.id, id)
-                self.assertEqual(t.value, val)
+            for rules, expected in testvectors:
+                tkz = Tokenizer(rules, [s])
+                for x, t in zip(expected, tkz.tokens()):
+                    ids, val = x
+                    id = getattr(tkz.TokenID, ids)
+                    self.assertEqual(t.id, id)
+                    self.assertEqual(t.value, val)
 
         def test_iter(self):
             rules = [TokenMatch('A', 'a'),
@@ -547,7 +577,7 @@ if __name__ == "__main__":
                 # just a few other lexical elements thrown in for example
                 TokenMatch('LBRACE', r'{'),
                 TokenMatch('RBRACE', r'}'),
-                TokenMatch('IDENTIFIER', TokenMatch.ascii_identifier_re),
+                TokenMatch('IDENTIFIER', TokenMatch.id_ascii),
                 TokenMatchRuleSwitch('COMMENT_START', r'/\*'),
                 TokenMatch('BAD', r'.'),
             ]
