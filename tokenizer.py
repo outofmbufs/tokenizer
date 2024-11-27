@@ -378,7 +378,7 @@ class TokenMatchKeyword(TokenMatch):
 
             TokenMatch('IF', r'(if)(magic)
 
-       where 'magic' is "not the TokenMatch.id_unicode
+       where 'magic' is "not the TokenMatch.id_unicode expression"
     """
     def __init__(self, tokname, regexp=None, *args, **kwargs):
         if regexp is None:
