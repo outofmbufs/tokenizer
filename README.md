@@ -1,14 +1,14 @@
 # tokenizer
 A simple tokenizer inspired by the example given in the python [re](https://docs.python.org/3/library/re.html) module, with some additional capabilities:
 
- - The `TokenMatch` class, and subclasses, allow specification of token names, processing rules, and corresponding regular expressions, separated from the tokenizing framework logic:
+ - `TokenMatch` objects specify token names, processing rules (e.g., integer conversion), and corresponding regular expressions;these are gathered into one or more `TokenRules` objects:
 
 ```
-    rules = [
+    rules = TokenRules([
         TokenMatch('VARIABLE', r'[A-Za-z][A-Za-z0-9]*'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
         TokenMatchInt('CONSTANT', r'-?[0-9]+'),
-    ]
+    ])
 
 ```
  - Automatically creates a `TokenID` Enum type from all of the token names given (e.g., the 'WHITESPACE', 'VARIABLE', etc above).
@@ -28,37 +28,37 @@ The TokStreamEnhancer does not depend on the `Tokenizer` class; it can be layere
 
 ## Using the Tokenizer
 
-In the simplest case, a `Tokenizer` is constructed from a sequence of `TokenMatch` objects and an (optional) input source. Each `TokenMatch` has two attributes:
+In the simplest case, a `Tokenizer` is constructed from a `TokenRules` object and an input stream. The `TokenRules` object is created from a sequence of `TokenMatch` objects. Each `TokenMatch` has two attributes:
 
  - tokname: -- string. This becomes the identifier in the `TokenID` Enum automatically created.
  - regexp: -- string. A regular expression.
 
 The TokenMatch class can also be subclassed to provide additional token-specific functionality as will be shown later.
 
-A `Tokenizer` is created from a sequence of `TokenMatch` objects and (typically) an open file:
+A typical, simple, example using a file for input:
 
-    from tokenizer import TokenMatch, Tokenizer
+    from tokenizer import TokenMatch, TokenRules, Tokenizer
 
-    rules = [
+    rules = TokenRules([
         TokenMatch('WHITESPACE', r'\s+'),
         TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
         TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ]
+    ])
     tkz = Tokenizer(rules, open('example-input', 'r'))
 
 Anything that is an iterable of strings works as input:
 
     tkz = Tokenizer(rules, ["first string, line 1", "second, line 2"])
 
-The most common/simplest code uses the tokens() method which generates a sequence of Token objects from the input specified at initialization time:
+The most common/simplest code uses the tokens() method which returns a generator that will provide a sequence of Token objects from the input specified at initialization time:
 
-    from tokenizer import TokenMatch, Tokenizer
+    from tokenizer import TokenMatch, TokenRules, Tokenizer
 
-    rules = [
+    rules = TokenRules([
         TokenMatch('WHITESPACE', r'\s+'),
         TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
         TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ]
+    ])
     with open('example-input', 'r') as f:
         for token in Tokenizer(rules, f).tokens():
             print(token.id, repr(token.value))
@@ -628,35 +628,6 @@ will output:
     TokenID.CONSTANT 42
 
 A variation of this technique is also useful for returning an entirely different __class__ of Token if desired; see the next section.
-
-### Using a different `Token`
-There are several ways to make the `Tokenizer` produce a different object than the built-in `Token` definition. The easiest is to supply keyword argument `tokentype` to `Tokenizer`:
-
-    class MyToken:
-        def __init__(self, tokid, value, location, /):
-            self.id = tokid            # TokenID Enum element
-            self.value = value         # from the TokenMatch
-            self.location = location   # TokLoc info
-
-    from tokenizer import TokenMatch, Tokenizer
-
-    rules = [
-        TokenMatch('A', 'a'),
-        TokenMatch('B', 'b')
-    ]
-    tkz = Tokenizer(rules, tokentype=MyToken)
-    for t in tkz.string_to_tokens('bba'):
-        print(t.__class__.__name__, t.id, repr(t.value))
-
-Output:
-
-    MyToken TokenID.B 'b'
-    MyToken TokenID.B 'b'
-    MyToken TokenID.A 'a'
-
-Another way is to simply not use the base class `action` and write a custom `action` method that creates tokens any way it wants to.
-
-Examples of various ideas like this can be found in the source, be sure to also look at the unittest code.
 
 
 # TokStreamEnhancer
