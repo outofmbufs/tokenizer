@@ -14,22 +14,14 @@ import re
 #    TokenRules       Collection(s) of TokenMatch objects
 #    TokenMatch       Object encapsulating a basic regexp rule.
 #    ... subclasses   Various subclasses of TokenMatch for special functions
-#
-#
 #    Token            The Tokenizer produces these.
 #    TokenID          An Enum dynamically created when TokenRules are
 #                     built from TokenMatch objects. Every Token has a
 #                     TokenID denoting its type (CONSTANT, IDENTIFIER, etc)
-#
-#    TokLoc   -- source location information, for error reporting.
+#    TokLoc           source location information, for error reporting.
 
 
-# A Token has an id (typically a TokenID enum), a value, and a 'location'
-# (typically a TokLoc ... information about the source the token came from).
-# This is the default Token type produced by the Tokenizer.
-# Applications can override this, see Tokenizer arguments.
-
-Token = namedtuple('Token', ['id', 'value', 'location'])
+_Token = namedtuple('Token', ['id', 'value', 'location'])
 
 
 # A TokLoc describes a source location; for error reporting purposes.
@@ -51,6 +43,15 @@ TokLoc = namedtuple('TokLoc',
 
 class Tokenizer:
     """Break streams into tokens with rules from regexps."""
+
+    # This Token class variable is the default Token type produced by
+    # the Tokenizer. If necessary it can be overridden in a subclass.
+    # The signature must still accept Token(id, value, loc) in such cases.
+    #
+    # As defined here a Token has an id, a value, and a 'location'
+    # (typically a TokLoc describing the line location of the match).
+
+    Token = namedtuple('Token', ['id', 'value', 'location'])
 
     def __init__(self, rules, strings=None, /, *, loc=None):
         """Set up a Tokenizer; see tokens() to generate tokens.
@@ -83,6 +84,11 @@ class Tokenizer:
         self.strings = strings
         self.lineno = getattr(loc, 'lineno', 1)
         self.sourcename = getattr(loc, 'sourcename', loc)
+
+        # if there are multiple groups of named RuleSets, this
+        # is the current one being used. The base/default RuleSet
+        # has None as its "name"
+        self.current_ruleset = rules.rulesets[None]
 
     # Iterating over a Tokenizer is the same as iterating over
     # the tokens() method, but without the ability to specify other args.
@@ -120,8 +126,8 @@ class Tokenizer:
 
         while True:
             # this fires on any rules change AND ALSO the first time through
-            if grules is not self.rules.current_ruleset:
-                grules = self.rules.current_ruleset
+            if grules is not self.current_ruleset:
+                grules = self.current_ruleset
                 g = re.finditer(grules.joined_rx, s[so_far:])
                 baseoffset = so_far
 
@@ -150,8 +156,21 @@ class Tokenizer:
             mobj = next(g)
         except StopIteration:
             return None, None, -1, -1
-        tm = self.rules.current_ruleset.pmap[mobj.lastgroup]
+        tm = self.current_ruleset.pmap[mobj.lastgroup]
         return tm, mobj.group(0), mobj.start(), mobj.end()
+
+    # support for switching the active rules.
+    def nextruleset(self):
+        """Switch to the circular-order-next ruleset"""
+        allnames = list(self.rules.rulesets)
+        i = allnames.index(self.current_ruleset.name)
+        try:
+            self.activate_ruleset(allnames[i + 1])
+        except IndexError:
+            self.activate_ruleset(allnames[0])
+
+    def activate_ruleset(self, name=None, /):
+        self.current_ruleset = self.rules.rulesets[name]
 
     class MatchError(Exception):
         """Exception raised when the input doesn't match any rules"""
@@ -173,7 +192,7 @@ class Tokenizer:
     # will break down if the lexical requirements are too complex.
     #
     @staticmethod
-    def linefilter(strings, preservelinecount=True):
+    def linefilter(strings, /, *, preservelinecount=True):
         """Implement backslash-newline escapes.
 
         If preservelinecount is True (DEFAULT), lines that are combined
@@ -220,16 +239,12 @@ class Tokenizer:
 #          )]
 #
 class TokenRules:
-    BASERULE = 'TRZ_Base'
-    NEXTRULE = 'TRZ_Next'
-
     RuleSet = namedtuple('RuleSet', ['joined_rx', 'pmap', 'name'])
 
     def __init__(self, primary_rules, /):
         self.__TokenID = None             # will be initialized lazy
         self.rulesets = {}
-        self.addruleset(self.BASERULE, primary_rules)
-        self.current_ruleset = self.rulesets[self.BASERULE]
+        self.addruleset(None, primary_rules)
 
     @property
     def TokenID(self):
@@ -257,7 +272,7 @@ class TokenRules:
     #
     # NOTE: This should all be done before the TokenRules are put into use
 
-    def addruleset(self, name, tms):
+    def addruleset(self, name, tms, /):
         "Add a sequence of TokenMatch objects under the name 'name'"
 
         # Force recalculation of .TokenID because there are new rules.
@@ -279,19 +294,6 @@ class TokenRules:
                              for pname, tm in pmap.items()
                              if tm.regexp is not None)
         self.rulesets[name] = self.RuleSet(joined_rx, pmap, name)
-
-    def _nextrulesetname(self):
-        """Return the circular-order-next ruleset name"""
-        rulenames = list(self.rulesets)
-        try:
-            return rulenames[rulenames.index(self.current_ruleset.name) + 1]
-        except IndexError:
-            return rulenames[0]
-
-    def activate_ruleset(self, name):
-        if name == self.NEXTRULE:
-            name = self._nextrulesetname()
-        self.current_ruleset = self.rulesets[name]
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
@@ -336,7 +338,7 @@ class TokenMatch:
     # When called from the framework, name is never given, but it is
     # added to this signature as a convenience for subclassing
     def action(self, val, loc, tkz, /, *, name=None):
-        return Token(
+        return tkz.Token(
             tkz.rules.TokenID[name or self.tokname], self._value(val), loc)
 
     def __repr__(self):
@@ -414,17 +416,25 @@ class TokenMatchIgnoreButKeep(TokenMatch):
 
 
 class TokenMatchRuleSwitch(TokenMatch):
-    def __init__(self, *args, rulename=TokenRules.NEXTRULE, **kwargs):
+    NEXTRULE = object()
+
+    def __init__(self, *args, rulename=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.rulename = rulename
 
     def action(self, val, loc, tkz, /):
-        tkz.rules.activate_ruleset(self.rulename)
+        if self.rulename is self.NEXTRULE:
+            tkz.nextruleset()
+        else:
+            tkz.activate_ruleset(self.rulename)
         return super().action(val, loc, tkz)
 
 
 if __name__ == "__main__":
     import unittest
+
+    def strictzip(a, b):
+        return zip(a, b, strict=True)
 
     class TestMethods(unittest.TestCase):
 
@@ -446,7 +456,7 @@ if __name__ == "__main__":
                 (rules.TokenID.NEWLINE, '\n')
             ]
 
-            for x, t in zip(expected_IDvals, tkz.tokens()):
+            for x, t in strictzip(expected_IDvals, tkz.tokens()):
                 id, val = x
                 self.assertEqual(t.id, id)
                 self.assertEqual(t.value, val)
@@ -503,7 +513,7 @@ if __name__ == "__main__":
 
             for rules, expected in testvectors:
                 tkz = Tokenizer(rules, [s])
-                for x, t in zip(expected, tkz.tokens()):
+                for x, t in strictzip(expected, tkz.tokens()):
                     ids, val = x
                     id = getattr(rules.TokenID, ids)
                     self.assertEqual(t.id, id)
@@ -520,7 +530,7 @@ if __name__ == "__main__":
                 rules.TokenID.A,
             ]
 
-            for id, t in zip(expected, tkz):
+            for id, t in strictzip(expected, tkz):
                 self.assertEqual(id, t.id)
 
         def test_lines(self):
@@ -536,7 +546,7 @@ if __name__ == "__main__":
                 (rules.TokenID.A, 2, 1),
                 (rules.TokenID.B, 2, 2),
             ]
-            for x, t in zip(expected, tkz):
+            for x, t in strictzip(expected, tkz):
                 tokid, lineno, startpos = x
                 self.assertEqual(tokid, t.id)
                 self.assertEqual(t.location.lineno, lineno)
@@ -569,12 +579,17 @@ if __name__ == "__main__":
 
         # C comment example
         def test_C(self):
+
+            # note: this is also implicitly a test of NEXTRULE
+            nextrule = TokenMatchRuleSwitch.NEXTRULE
+
             rules = TokenRules([
                 # just a few other lexical elements thrown in for example
                 TokenMatch('LBRACE', r'{'),
                 TokenMatch('RBRACE', r'}'),
                 TokenMatch('IDENTIFIER', TokenMatch.id_ascii),
-                TokenMatchRuleSwitch('COMMENT_START', r'/\*'),
+                TokenMatchRuleSwitch(
+                    'COMMENT_START', r'/\*', rulename=nextrule),
                 TokenMatch('BAD', r'.'),
             ])
 
@@ -583,7 +598,7 @@ if __name__ == "__main__":
                 TokenMatchIgnore('C_NOTSTAR', r'[^*]+'),
 
                 # */ ends the comment and returns to regular rules
-                TokenMatchRuleSwitch('COMMENT_END', r'\*/'),
+                TokenMatchRuleSwitch('COMMENT_END', r'\*/', rulename=nextrule),
 
                 # when a star is seen that isn't */ this eats it
                 TokenMatchIgnore('C_STAR', r'\*'),
@@ -592,8 +607,6 @@ if __name__ == "__main__":
             for sx, expected in (
                     (["abc/*", "def*/"],
                      ['IDENTIFIER', 'COMMENT_START', 'COMMENT_END']),
-                     ):
-                foo = """
                     (["/**/"], ['COMMENT_START', 'COMMENT_END']),
                     (["{/**/}"],
                      ['LBRACE', 'COMMENT_START', 'COMMENT_END', 'RBRACE']),
@@ -613,11 +626,10 @@ if __name__ == "__main__":
                       "BUT_THIS_IS_AN_IDENTIFIER"],
                      ['COMMENT_START', 'COMMENT_END', 'IDENTIFIER']),
                     ):
-                """
                 tkz = Tokenizer(rules, sx)
                 toks = list(tkz.tokens())
                 with self.subTest(sx=sx):
-                    for name, t in zip(expected, toks):
+                    for name, t in strictzip(expected, toks):
                         self.assertEqual(rules.TokenID[name], t.id)
 
         # check that duplicated toknames are allowed
@@ -628,7 +640,8 @@ if __name__ == "__main__":
             tkz = Tokenizer(rules)
 
             expected = (('FOO', 'f'), ('BAR', 'b'), ('FOO', 'zzz'))
-            for token, ex in zip(tkz.string_to_tokens('fbzzz'), expected):
+            for token, ex in strictzip(
+                    tkz.string_to_tokens('fbzzz'), expected):
                 self.assertEqual(token.id, rules.TokenID[ex[0]])
                 self.assertEqual(token.value, ex[1])
 
@@ -654,8 +667,7 @@ if __name__ == "__main__":
 
             group2 = [
                 TokenMatch('ZED', r'z'),
-                TokenMatchRuleSwitch(
-                    'MAINRULES', r'/@/', rulename=TokenRules.BASERULE)
+                TokenMatchRuleSwitch('MAINRULES', r'/@/')
             ]
 
             rules = TokenRules(group1)
@@ -670,7 +682,8 @@ if __name__ == "__main__":
                 rules.TokenID.ZEE,
             )
 
-            for token, ex in zip(tkz.string_to_tokens('zz/@/z/@/z'), expected):
+            for token, ex in strictzip(
+                    tkz.string_to_tokens('zz/@/z/@/z'), expected):
                 self.assertEqual(token.id, ex)
                 if ex in (rules.TokenID.ZEE, rules.TokenID.ZED):
                     self.assertEqual(token.value, 'z')
@@ -711,7 +724,8 @@ if __name__ == "__main__":
                 TokenMatch_2('_2', '2'),
             ])
 
-            expected = [Token, MyToken_1, MyToken_2, Token]
+            expected = [
+                Tokenizer.Token, MyToken_1, MyToken_2, Tokenizer.Token]
             tkz = Tokenizer(rules)
             classes = [t.__class__ for t in tkz.string_to_tokens('0120')]
             self.assertEqual(classes, expected)
@@ -724,7 +738,7 @@ if __name__ == "__main__":
                 TokenMatch('IDENTIFIER', r'[^\W\d]\w*'),
             ])
 
-            s = "if then Then thence thençe ifõ"
+            s = "if then Then thence thençe ifõ\n"
             tkz = Tokenizer(rules, [s])
             expected = [
                 (rules.TokenID.IF, 'if'),
@@ -735,8 +749,7 @@ if __name__ == "__main__":
                 (rules.TokenID.IDENTIFIER, 'ifõ'),
                 (rules.TokenID.NEWLINE, '\n')
             ]
-
-            for x, t in zip(expected, tkz.tokens()):
+            for x, t in strictzip(expected, tkz.tokens()):
                 id, val = x
                 with self.subTest(id=id, val=val, t=t):
                     self.assertEqual(t.id, id)
