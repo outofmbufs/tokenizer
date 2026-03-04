@@ -244,21 +244,18 @@ class TokenRules:
     def __init__(self, primary_rules, /):
         self.__TokenID = None             # will be initialized lazy
         self.rulesets = {}
+        self.__allnames = []              # for creating the TokenID Enum
         self.addruleset(None, primary_rules)
 
+    # The TokenID attribute is the Enum created from all the token names
+    # given in all the TokenRules named sets of rules. It is created
+    # lazily, so that multiple addruleset() calls can be made as needed
+    # at startup (presumably all before looking at TokenID).
     @property
     def TokenID(self):
         if self.__TokenID is None:
-            self.__TokenID = self.__makeEnum()
+            self.__TokenID = Enum('TokenID', self.__allnames)
         return self.__TokenID
-
-    def __makeEnum(self):
-        # collect all the toknames from all the TokenMatch objects
-        # NOTE: weed out duplicates w/set() because dups are possible
-        toknames = set(r.tokname
-                       for rs in self.rulesets.values()
-                       for r in rs.pmap.values())
-        return Enum('TokenID', sorted(toknames))
 
     # If explicit contorl over the TokenID Enum is needed, it
     # can be set manually this way, bypassing the (lazy) automated creation.
@@ -274,6 +271,13 @@ class TokenRules:
 
     def addruleset(self, name, tms, /):
         "Add a sequence of TokenMatch objects under the name 'name'"
+
+        # remember all the toknames, in order, without duplicates.
+        # This doesn't use a set() because order is being preserved
+        # (for no particularly good reason, but it is preserved).
+        for tm in tms:
+            if tm.tokname not in self.__allnames:
+                self.__allnames.append(tm.tokname)
 
         # Force recalculation of .TokenID because there are new rules.
         # NOTE: Best practice is add all rules before ever looking at
@@ -692,6 +696,42 @@ if __name__ == "__main__":
                     self.assertEqual(token.value, '/@/')
                 else:
                     self.assertTrue(False)
+
+        # This tests that it is ok to have duplicate names across rulesets
+        def test_ruleswitch2(self):
+
+            group1 = [
+                TokenMatch('ZEE', r'z'),
+                TokenMatchRuleSwitch('SWITCH', r'/@/', rulename='ALT')
+            ]
+
+            group2 = [
+                TokenMatch('ZED', r'z'),
+                TokenMatchRuleSwitch('SWITCH', r'/@/')
+            ]
+
+            rules = TokenRules(group1)
+            rules.addruleset('ALT', group2)
+            tkz = Tokenizer(rules)
+            expected = (
+                rules.TokenID.ZEE,
+                rules.TokenID.ZEE,
+                rules.TokenID.SWITCH,
+                rules.TokenID.ZED,
+                rules.TokenID.SWITCH,
+                rules.TokenID.ZEE,
+            )
+
+            for token, ex in strictzip(
+                    tkz.string_to_tokens('zz/@/z/@/z'), expected):
+                self.assertEqual(token.id, ex)
+                if ex in (rules.TokenID.ZEE, rules.TokenID.ZED):
+                    self.assertEqual(token.value, 'z')
+                elif ex == rules.TokenID.SWITCH:
+                    self.assertEqual(token.value, '/@/')
+                else:
+                    self.assertTrue(False)
+
 
         # This test demonstrates returning different types of Token
         # objects depending on the match. Likely not a real use-case.
