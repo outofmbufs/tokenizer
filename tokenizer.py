@@ -11,17 +11,29 @@ import re
 #
 # The basics:
 #    Tokenizer        Main object. Built from a TokenRules object
-#    TokenRules       Collection(s) of TokenMatch objects
+#
+#    TokenRules       In simple applications this is built from one or more
+#                     TokenMatch objects representing the lexical rules.
+#                     In advanced applications NamedRuleSet objects will be
+#                     used to build the TokenRules, allowing for different
+#                     lexical rules to switch in/out dynamically.
+#
+#    NamedRuleSet     A sequence of TokenMatch objects gathered together
+#                     and selectable by a given name. Advanced applications
+#                     can use multiple NamedRuleSets in a single TokenRules.
+#                     Simple applications don't even have to know there
+#                     is such a thing as a NamedRuleSet.
+#
 #    TokenMatch       Object encapsulating a basic regexp rule.
 #    ... subclasses   Various subclasses of TokenMatch for special functions
+#
 #    Token            The Tokenizer produces these.
+#
 #    TokenID          An Enum dynamically created when TokenRules are
 #                     built from TokenMatch objects. Every Token has a
 #                     TokenID denoting its type (CONSTANT, IDENTIFIER, etc)
+#
 #    TokLoc           source location information, for error reporting.
-
-
-_Token = namedtuple('Token', ['id', 'value', 'location'])
 
 
 # A TokLoc describes a source location; for error reporting purposes.
@@ -33,8 +45,7 @@ _Token = namedtuple('Token', ['id', 'value', 'location'])
 #    startpos   -- Index with s where the error occurred.
 #    endpos     -- ONE PAST the end of the error (i.e., the "next" position)
 #
-# NOTE: If none of this is known but a TokLoc() is needed (e.g., when
-#       making a Token) then TokLoc() with no arguments suffices.
+# NOTE: A bare TokLoc() can be specified if none of this is useful/known.
 #
 TokLoc = namedtuple('TokLoc',
                     ['s', 'sourcename', 'lineno', 'startpos', 'endpos'],
@@ -42,11 +53,10 @@ TokLoc = namedtuple('TokLoc',
 
 
 class Tokenizer:
-    """Break streams into tokens with rules from regexps."""
+    """Break iterables of strings into Tokens with rules from regexps."""
 
     # This Token class variable is the default Token type produced by
-    # the Tokenizer. If necessary it can be overridden in a subclass.
-    # The signature must still accept Token(id, value, loc) in such cases.
+    # the Tokenizer. Subclasses can override if necessary.
     #
     # As defined here a Token has an id, a value, and a 'location'
     # (typically a TokLoc describing the line location of the match).
@@ -60,11 +70,7 @@ class Tokenizer:
            rules    -- A TokenRules object.
 
            strings  -- should be an iterable of strings. Can be None.
-                       Most commonly it is an open text file, and it
-                       gets used like this:
-                          for s in strings:
-                              ... tokenize s ...
-                       so anything duck-typing as iterable of str works.
+                       Most commonly it is an open text file.
 
            **NOTE** :: A TokenMatch will not find a match ACROSS a string
                        boundary. Said differently: Every Token must lie
@@ -81,36 +87,35 @@ class Tokenizer:
         """
 
         self.rules = rules
+        self.current_ruleset = rules.rulesets[rules.primary_rulename]
         self.strings = strings
         self.lineno = getattr(loc, 'lineno', 1)
         self.sourcename = getattr(loc, 'sourcename', loc)
 
-        # if there are multiple groups of named RuleSets, this
-        # is the current one being used. The base/default RuleSet
-        # has None as its "name"
-        self.current_ruleset = rules.rulesets[None]
-
     # Iterating over a Tokenizer is the same as iterating over
     # the tokens() method, but without the ability to specify other args.
+    # NOTE: This only makes sense if the input ("strings" argument) was
+    #       provided at Tokenizer init time.
     def __iter__(self):
         return self.tokens()
 
     def tokens(self, strings=None, /, *, loc=None):
         """GENERATE tokens. See __init__() for arg descriptions."""
 
-        if strings is not None:
-            self.strings = strings
-
-        # Only clobber the __init__ values if loc given
+        # rationalize vs what was (or was not) provided at __init__ time
+        if strings is None:
+            strings = self.strings
 
         if loc is not None:
             self.sourcename = loc.sourcename
             self.lineno = loc.lineno
 
-        if self.lineno is None:         # no line numbers
-            g = ((None, s) for s in self.strings)
-        else:
-            g = enumerate(self.strings, start=self.lineno)
+        try:
+            g = enumerate(strings, start=self.lineno)
+        except TypeError:
+            # self.lineno is (presumably) None, so no linenumbers
+            g = ((None, s) for s in strings)
+
         for i, s in g:
             yield from self.string_to_tokens(
                 s, loc=TokLoc(lineno=i, sourcename=self.sourcename))
@@ -161,7 +166,7 @@ class Tokenizer:
 
     # support for switching the active rules.
     def nextruleset(self):
-        """Switch to the circular-order-next ruleset"""
+        """Switch to the next ruleset, using circular-order"""
         allnames = list(self.rules.rulesets)
         i = allnames.index(self.current_ruleset.name)
         try:
@@ -227,6 +232,27 @@ class Tokenizer:
         yield from makeups
 
 
+# NamedRuleSet collects TokenMatch objects together along with a
+# name, and is useful for creating TokenRules with multiple such sets.
+# This is unnecessary in the standard/simple case where there is only
+# one (unnamed) set of TokenMatch objects; those can be given to
+# TokenRules directly.
+class NamedRuleSet:
+    def __init__(self, rules, /, *, name=None):
+
+        # Create one enormous "or" regexp with (?P=name) annotations
+        # for each clause within it. The 'name' is a "pname" - not a
+        # tokname - because toknames can appear multiple times in rules.
+        # The pmap attribute maps these annotation names to token names
+        self.pmap = {f"PN{i:04d}": tm for i, tm in enumerate(rules)}
+
+        # One Massive regexp to rule them all
+        self.joined_rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
+                                  for pname, tm in self.pmap.items()
+                                  if tm.regexp is not None)
+        self.name = name
+
+
 #
 # TokenRules encapsulate one or more sets of TokenMatch objects, forming
 # the lexical rules for a Tokenizer. In the simplest case, a TokenRules
@@ -239,65 +265,35 @@ class Tokenizer:
 #          )]
 #
 class TokenRules:
-    RuleSet = namedtuple('RuleSet', ['joined_rx', 'pmap', 'name'])
+    def __init__(self, primary_rules, *alt_rules):
 
-    def __init__(self, primary_rules, /):
-        self.__TokenID = None             # will be initialized lazy
-        self.rulesets = {}
-        self.__allnames = []              # for creating the TokenID Enum
-        self.addruleset(None, primary_rules)
+        # If there is only one group of rules they can be given directly
+        # as an iterable of TokenMatch objects rather than a NamedRuleSet;
+        # look for that and convert.
 
-    # The TokenID attribute is the Enum created from all the token names
-    # given in all the TokenRules named sets of rules. It is created
-    # lazily, so that multiple addruleset() calls can be made as needed
-    # at startup (presumably all before looking at TokenID).
-    @property
-    def TokenID(self):
-        if self.__TokenID is None:
-            self.__TokenID = Enum('TokenID', self.__allnames)
-        return self.__TokenID
+        try:
+            self.primary_rulename = primary_rules.name
+        except AttributeError:
+            primary_rules = NamedRuleSet(primary_rules)
+            self.primary_rulename = primary_rules.name
 
-    # If explicit contorl over the TokenID Enum is needed, it
-    # can be set manually this way, bypassing the (lazy) automated creation.
-    @TokenID.setter
-    def TokenID(self, value):
-        self.__TokenID = value
+        if self.primary_rulename in (n_r.name for n_r in alt_rules):
+            raise ValueError(f"Dup primary name: {self.primary_rulename}")
 
-    # most of the time only one (the "primary") ruleset is needed but
-    # when multiple are needed each one is added this way after the
-    # initial TokenRules() object creation.
-    #
-    # NOTE: This should all be done before the TokenRules are put into use
+        self.rulesets = {n_r.name: n_r for n_r in (primary_rules, *alt_rules)}
+        self.TokenID = self.__makeEnum()
 
-    def addruleset(self, name, tms, /):
-        "Add a sequence of TokenMatch objects under the name 'name'"
+    def __makeEnum(self):
+        # ordering is not really guaranteed, but given that dicts
+        # preserve insertion order, this produces an Enum with the
+        # toknames in order of definition.
+        allnames = []
+        for rs in self.rulesets.values():
+            for tokname in (tm.tokname for tm in rs.pmap.values()):
+                if tokname not in allnames:
+                    allnames.append(tokname)
 
-        # remember all the toknames, in order, without duplicates.
-        # This doesn't use a set() because order is being preserved
-        # (for no particularly good reason, but it is preserved).
-        for tm in tms:
-            if tm.tokname not in self.__allnames:
-                self.__allnames.append(tm.tokname)
-
-        # Force recalculation of .TokenID because there are new rules.
-        # NOTE: Best practice is add all rules before ever looking at
-        #       the .TokenID Enum; doing otherwise is fraught with peril.
-        #       This line enables that peril, but CAVEAT PROGRAMMER
-        self.__TokenID = None
-
-        # Each named ruleset becomes one enormous "or" regexp with
-        # (?P=name) annotations for each clause within it.
-        # The 'name' in those annotations is a "pname" and it is not
-        # simply the tokname because toknames can appear multiple
-        # times (to allow different regexps to resolve to the same token)
-        # The pmap in a Ruleset maps these annotation names to token names
-        pmap = {f"PN{i:04d}": tm for i, tm in enumerate(tms)}
-
-        # One Massive regexp to rule them all
-        joined_rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
-                             for pname, tm in pmap.items()
-                             if tm.regexp is not None)
-        self.rulesets[name] = self.RuleSet(joined_rx, pmap, name)
+        return Enum('TokenID', allnames)
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
@@ -587,7 +583,7 @@ if __name__ == "__main__":
             # note: this is also implicitly a test of NEXTRULE
             nextrule = TokenMatchRuleSwitch.NEXTRULE
 
-            rules = TokenRules([
+            tms = [
                 # just a few other lexical elements thrown in for example
                 TokenMatch('LBRACE', r'{'),
                 TokenMatch('RBRACE', r'}'),
@@ -595,9 +591,10 @@ if __name__ == "__main__":
                 TokenMatchRuleSwitch(
                     'COMMENT_START', r'/\*', rulename=nextrule),
                 TokenMatch('BAD', r'.'),
-            ])
+            ]
+            mainrules = NamedRuleSet(tms)
 
-            rules.addruleset('ALT', [
+            tms = [
                 # eat everything that is not a star
                 TokenMatchIgnore('C_NOTSTAR', r'[^*]+'),
 
@@ -606,7 +603,10 @@ if __name__ == "__main__":
 
                 # when a star is seen that isn't */ this eats it
                 TokenMatchIgnore('C_STAR', r'\*'),
-            ])
+            ]
+            altrules = NamedRuleSet(tms, name='ALT')
+
+            rules = TokenRules(mainrules, altrules)
 
             for sx, expected in (
                     (["abc/*", "def*/"],
@@ -674,8 +674,9 @@ if __name__ == "__main__":
                 TokenMatchRuleSwitch('MAINRULES', r'/@/')
             ]
 
-            rules = TokenRules(group1)
-            rules.addruleset('ALT', group2)
+            ng1 = NamedRuleSet(group1)
+            ng2 = NamedRuleSet(group2, name='ALT')
+            rules = TokenRules(ng1, ng2)
             tkz = Tokenizer(rules)
             expected = (
                 rules.TokenID.ZEE,
@@ -698,6 +699,7 @@ if __name__ == "__main__":
                     self.assertTrue(False)
 
         # This tests that it is ok to have duplicate names across rulesets
+        # It also tests an explicit (not-None) name for the primary rules
         def test_ruleswitch2(self):
 
             group1 = [
@@ -707,11 +709,12 @@ if __name__ == "__main__":
 
             group2 = [
                 TokenMatch('ZED', r'z'),
-                TokenMatchRuleSwitch('SWITCH', r'/@/')
+                TokenMatchRuleSwitch('SWITCH', r'/@/', rulename='PRIMARY')
             ]
+            ng1 = NamedRuleSet(group1, name='PRIMARY')
+            ng2 = NamedRuleSet(group2, name='ALT')
+            rules = TokenRules(ng1, ng2)
 
-            rules = TokenRules(group1)
-            rules.addruleset('ALT', group2)
             tkz = Tokenizer(rules)
             expected = (
                 rules.TokenID.ZEE,
@@ -731,7 +734,6 @@ if __name__ == "__main__":
                     self.assertEqual(token.value, '/@/')
                 else:
                     self.assertTrue(False)
-
 
         # This test demonstrates returning different types of Token
         # objects depending on the match. Likely not a real use-case.
