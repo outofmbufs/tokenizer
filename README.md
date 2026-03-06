@@ -1,242 +1,47 @@
 # tokenizer
-A simple tokenizer inspired by the example given in the python [re](https://docs.python.org/3/library/re.html) module, with some additional capabilities:
+A simple `Tokenizer` class inspired by the python [re](https://docs.python.org/3/library/re.html) module example, with enhancements.
 
- - `TokenMatch` objects specify token names, processing rules (e.g., integer conversion), and corresponding regular expressions;these are gathered into one or more `TokenRules` objects:
+# Quick Start
+A working example:
 
-```
+    from tokenizer import TokenMatch, TokenMatchInt, TokenRules, Tokenizer
+
     rules = TokenRules([
-        TokenMatch('VARIABLE', r'[A-Za-z][A-Za-z0-9]*'),
-        TokenMatchIgnore('WHITESPACE', r'\s+'),
+        TokenMatch('WHITESPACE', r'\s+'),
+        TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII),    # see below
         TokenMatchInt('CONSTANT', r'-?[0-9]+'),
     ])
 
-```
- - Automatically creates a `TokenID` Enum type from all of the token names given (e.g., the 'WHITESPACE', 'VARIABLE', etc above).
- - Defines a `Token` object containing an `id` (a `TokenID` Enum), a `value` (usually a string), and source location information (where it came from in the input).
- - Generates a stream of `Token` objects from string inputs, which can come from file objects or indeed just be a string or an iterable of strings.
- - Provides some TokenMatch subclasses with additional capabilities, such as converting the `value` string to something more appropriate (e.g., `TokenMatchInt` which will convert the token string into an integer).
-  - Can be extended for further custom token processing by subclassing TokenMatch.
- - Can switch rule sets triggered by specific tokens for modal tokenizing.
+    input_strings = ["abc123 3750   def",
+                     "xyzzy"]
 
-There is also a TokStreamEnhancer providing:
- - Concatenation of multiple input streams.
- - N-level "peek" / "unget".
- - A way to remember ("mark") a spot in the token stream and, if desired, unget tokens ("unwind") all the way back to that point.
- - Two more ways (beyond just StopIteration) to handle EOF: a one-time EOF token prior to the StopIteration, or an infinite supply of EOF tokens (never causing StopIteration).
-
-The TokStreamEnhancer does not depend on the `Tokenizer` class; it can be layered onto any iterator that provides a stream of arbitrary objects.
-
-## Using the Tokenizer
-
-In the simplest case, a `Tokenizer` is constructed from a `TokenRules` object and an input stream. The `TokenRules` object is created from a sequence of `TokenMatch` objects. Each `TokenMatch` has two attributes:
-
- - tokname: -- string. This becomes the identifier in the `TokenID` Enum automatically created.
- - regexp: -- string. A regular expression.
-
-The TokenMatch class can also be subclassed to provide additional token-specific functionality as will be shown later.
-
-A typical, simple, example using a file for input:
-
-    from tokenizer import TokenMatch, TokenRules, Tokenizer
-
-    rules = TokenRules([
-        TokenMatch('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
-        TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ])
-    tkz = Tokenizer(rules, open('example-input', 'r'))
-
-Anything that is an iterable of strings works as input:
-
-    tkz = Tokenizer(rules, ["first string, line 1", "second, line 2"])
-
-The most common/simplest code uses the tokens() method which returns a generator that will provide a sequence of Token objects from the input specified at initialization time:
-
-    from tokenizer import TokenMatch, TokenRules, Tokenizer
-
-    rules = TokenRules([
-        TokenMatch('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
-        TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ])
-    with open('example-input', 'r') as f:
-        for token in Tokenizer(rules, f).tokens():
-            print(token.id, repr(token.value))
-
-and, given this example-input file:
-
-    abc123 def    ghi_jkl  _underbar   123456
-
-outputs:
-
-    TokenID.WHITESPACE '    '
-    TokenID.IDENTIFIER 'abc123'
-    TokenID.WHITESPACE ' '
-    TokenID.IDENTIFIER 'def'
-    TokenID.WHITESPACE '    '
-    TokenID.IDENTIFIER 'ghi_jkl'
-    TokenID.WHITESPACE '  '
-    TokenID.IDENTIFIER '_underbar'
-    TokenID.WHITESPACE '   '
-    TokenID.CONSTANT '123456'
-    TokenID.WHITESPACE '\n'
-
-The input can be provided to the `tokens` method instead of being supplied at `Tokenizer` creation time:
-
-    tkz = Tokenizer(rules)
-    with open('example-input', 'r') as f:
-        for token in tkz.tokens(f):
-            print(token.id, repr(token.value))
-
-To directly tokenize a specific string:
-
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("this   is\ninput 123"):
-        print(token.id, repr(token.value))
-
-resulting in this output:
-
-    TokenID.IDENTIFIER 'this'
-    TokenID.WHITESPACE '   '
-    TokenID.IDENTIFIER 'is'
-    TokenID.WHITESPACE '\n'
-    TokenID.IDENTIFIER 'input'
-    TokenID.WHITESPACE ' '
-    TokenID.CONSTANT '123'
-
-### Unicode conveniences
-The IDENTIFIER TokenMatch shown above won't accept Unicode characters.
-For example:
-
-    from tokenizer import TokenMatch, Tokenizer
-
-    rules = [
-        TokenMatch('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
-        TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ]
-
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("MötleyCrüe rulz"):
-        print(token.id, repr(token.value))
-
-
-will recognize the first M as an IDENTIFIER by itself:
-
-    TokenID.IDENTIFIER 'M'
-
-and then raise an exception because the `ö` character does not match any rule.
-
-As a convenience, the TokenMatch class defines some ready-made regular expressions for typical identifier patterns.
-
-For Unicode identifiers that are permitted to start with ANY Unicode "alphabetic" character or underscore, followed by any number of such characters but then also including digits (just not in the first character):
-
-    TokenMatch.id_unicode            # = r'[^\W\d]\w*'
-
-If underscores are not allowed:
-
-    TokenMatch.id_unicode_no_under   # = r'[^\W\d_][^\W_]*'
-
-The equivalent ASCII-only patterns are fairly obvious, but are also provided as class variables for symmetry:
-
-    TokenMatch.id_ascii              # = r'[A-Za-z_][A-Za-z_0-9]*'
-    TokenMatch.id_ascii_no_under     # = r'[A-Za-z][A-Za-z0-9]*'
-
-Thus, for example:
-
-    TokenMatch('IDENTIFIER', TokenMatch.id_unicode)
-
-will accept identifiers like:
-
-    MötleyCrüe
-
-whereas
-
-    TokenMatch('IDENTIFIER', TokenMatch.id_ascii)
-
-will not.
-
-### Enum (TokenID) Creation/Management
-
-A Tokenizer object has an attribute, `TokenID`, containing an Enum used for token identifiers; it is normally created automatically from the rules:
-
-    from tokenizer import TokenMatch, Tokenizer
-
-    rules = [
-        TokenMatch('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-        TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ]
-    tkz = Tokenizer(rules)
-    print(tkz.TokenID)
-    for tokid in tkz.TokenID:
-        print(f"  {tokid!r}")
+    tkz = Tokenizer(rules, input_strings)
+    for token in tkz.tokens():
+        print(f"ID = {token.id:20s} VALUE = {token.value!r}")
 
 This will output:
 
-    <enum 'TokenID'>
-      <TokenID.CONSTANT: 1>
-      <TokenID.IDENTIFIER: 2>
-      <TokenID.WHITESPACE: 3>
+    ID = TokenID.IDENTIFIER   VALUE = 'abc123'
+    ID = TokenID.WHITESPACE   VALUE = ' '
+    ID = TokenID.CONSTANT     VALUE = 3750
+    ID = TokenID.WHITESPACE   VALUE = '   '
+    ID = TokenID.IDENTIFIER   VALUE = 'def'
+    ID = TokenID.IDENTIFIER   VALUE = 'xyzzy'
 
-Some applications may need token types defined without any match; this can be specified with `None` for the regular expression or with the `TokenIDOnly` subclass of `TokenMatch` (they are equivalent):
+Notes:
+- For convenience, `TokenMatch` defines some regular expression constants such as `TokenMatch.ID_ASCII` (`r'[A-Za-z_][A-Za-z_0-9]*'`). See [Unicode](#unicode).
+- The second argument to `Tokenizer` is an iterable of strings (not a "naked" string). An open file can be used because it acts like an iterable of strings.
+- The `value` attribute of each token is a string when the match came from a `TokenMatch`. It is an integer when it came from `TokenMatchInt`. There are many other `TokenMatch` variations available.
+- The token `id` attribute is an Enum value, a `TokenID` Enum which was created automatically from the names given in all the `TokenMatch` objects supplied. The `TokenID` Enum is available as `rules.TokenID` (i.e., in the `TokenRules` object)
 
-    from tokenizer import TokenMatch, TokenIDOnly, Tokenizer
-    rules = [
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-        TokenMatch('CONSTANT', r'-?[0-9]+'),
-        TokenMatch('FOO', None),
-        TokenIDOnly('BAR')
-    ]
-    tkz = Tokenizer(rules)
-    print(tkz.TokenID)
-    for tokid in tkz.TokenID:
-        print(f"  {tokid!r}")
+This is enough to get started; the rest of this document dives into details.
 
+## TokenMatch Details
 
-Output:
+`TokenMatch` objects specify token names, processing rules, and corresponding regular expressions. Subclasses of `TokenMatch` automate typical conversion actions, such as converting a string of digit characters into a native integer - as shown above in the Quick Start.
 
-    <enum 'TokenID'>
-      <TokenID.BAR: 1>
-      <TokenID.CONSTANT: 2>
-      <TokenID.FOO: 3>
-      <TokenID.IDENTIFIER: 4>
-
-Applications can call (classmethod) `create_tokenID_enum` directly to create a TokenID Enum separately from instantiating a `Tokenizer`:
-
-    ids = Tokenizer.create_tokenID_enum(rules)
-
-in which case `ids` will be the Enum. That Enum (or one constructed entirely custom by the application) can be passed into `Tokenizer` for use in lieu of it automatically creating one. Here is an example with a hand-build Enum for token IDs:
-
-    from tokenizer import TokenMatch, Tokenizer
-    from enum import Enum
-
-    rules = [
-        TokenMatch('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-        TokenMatch('CONSTANT', r'-?[0-9]+'),
-    ]
-    class Foo(Enum):
-        WHITESPACE = 17
-        IDENTIFIER = 42
-        CONSTANT = 3
-
-    tkz = Tokenizer(rules, tokenIDs=Foo)
-    print(tkz.TokenID)
-    for tokid in tkz.TokenID:
-        print(f"  {tokid!r}")
-
-which will output:
-
-    <enum 'Foo'>
-      <Foo.WHITESPACE: 17>
-      <Foo.IDENTIFIER: 42>
-      <Foo.CONSTANT: 3>
-
-## Available TokenMatch Enhancements
-
-Enhanced matching/processing features can be implemented by subclasses of `TokenMatch`, several of which have been written and provided in the tokenizer module:
-
+The `tokenizer` module provides:
+ - TokenMatch
  - TokenIDOnly
  - TokenMatchIgnore
  - TokenMatchIgnoreButKeep
@@ -244,77 +49,74 @@ Enhanced matching/processing features can be implemented by subclasses of `Token
  - TokenMatchConvert
  - TokenMatchKeyword
 
-These, and how to write custom classes, will be described next.
+### TokenMatch
+The base class. All other variations are subclassed off this. Whatever matches the regexp is put into the token `value` as a string.
 
 ### TokenIDOnly
 
-This was already shown in an example earlier. This allows an application to create additional token types (i.e., elements of the TokenID Enum) that the application may need for other purposes but will have no corresponding regular expression to match:
+`TokenIDOnly` allows an application to create additional `TokenID` Enum entries that do not have a corresponding regular expression. This is useful for special tokens that might be inserted manually at upper levels of processing.
 
-    from tokenizer import TokenIDOnly, Tokenizer
-    rules = [
+To see this, consider this contrived example:
+
+    from tokenizer import TokenIDOnly, TokenMatch, Tokenizer, TokenRules
+    rules = TokenRules([
         TokenIDOnly('FOO'),
         TokenIDOnly('BAR'),
-        TokenIDOnly('BAZ')
-    ]
-    tkz = Tokenizer(rules)
+        TokenIDOnly('BAZ'),
+        TokenMatch('BANG', r'!')
+    ])
 
-This creates a Tokenizer that never matches anything (a real usage would obviously have some TokenMatch elements) and has a `tkz.TokenID` Enum containing FOO, BAR, and BAZ.
+    print(list(rules.TokenID))
+
+This will output
+
+    [<TokenID.FOO: 1>, <TokenID.BAR: 2>, <TokenID.BAZ: 3>, <TokenID.BANG: 4>]
+
+TokenIDs FOO, BAR, and BAZ will never be produced by a `Tokenizer` built from this set of rules, but are available for use by the application however it needs.
 
 ### TokenMatchIgnore
 
-`TokenMatchIgnore` can be used for a token that needs to be matched for syntax reasons but does not need to appear in the stream for upper-level parsing. The most common example of this is whitespace:
+ Another `TokenMatch` subclass, `TokenMatchIgnore` matches the regular expression but discards the token. This is especially useful for white space processing.
 
-    # WITHOUT TokenMatchIgnore
-    from tokenizer import TokenMatch, Tokenizer
-    rules = [
-        TokenMatch('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-    ]
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("This is a test"):
-        print(token.id, repr(token.value))
+Here is the same example from Quick Start but using `TokenMatchIgnore` for white space:
+
+
+    from tokenizer import TokenMatch, TokenMatchInt, TokenMatchIgnore
+    from tokenizer import TokenRules, Tokenizer
+
+    rules = TokenRules([
+        TokenMatchIgnore('WHITESPACE', r'\s+'),
+        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+    ])
+
+    input_strings = ["abc123 3750   def",
+                     "xyzzy"]
+
+    tkz = Tokenizer(rules, input_strings)
+    for token in tkz.tokens():
+        print(f"ID = {token.id:20s} VALUE = {token.value!r}")
 
 This will output:
 
-    TokenID.IDENTIFIER 'This'
-    TokenID.WHITESPACE ' '
-    TokenID.IDENTIFIER 'is'
-    TokenID.WHITESPACE ' '
-    TokenID.IDENTIFIER 'a'
-    TokenID.WHITESPACE ' '
-    TokenID.IDENTIFIER 'test'
-
-Using TokenMatchIgnore like this will discard WHITESPACE tokens:
-
-    from tokenizer import TokenMatch, Tokenizer, TokenMatchIgnore
-    rules = [
-        TokenMatchIgnore('WHITESPACE', r'\s+'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-    ]
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("This is a test"):
-        print(token.id, repr(token.value))
-
-Output:
-
-    TokenID.IDENTIFIER 'This'
-    TokenID.IDENTIFIER 'is'
-    TokenID.IDENTIFIER 'a'
-    TokenID.IDENTIFIER 'test'
-
+    ID = TokenID.IDENTIFIER   VALUE = 'abc123'
+    ID = TokenID.CONSTANT     VALUE = 3750
+    ID = TokenID.IDENTIFIER   VALUE = 'def'
+    ID = TokenID.IDENTIFIER   VALUE = 'xyzzy'
 
 ### TokenMatchIgnoreButKeep
+
 In some cases whitespace can be suppressed but newlines have semantic significance and should be preserved. `TokenMatchIgnoreButKeep` is made for this:
 
-    from tokenizer import TokenMatch, Tokenizer
+    from tokenizer import TokenMatch, Tokenizer, TokenRules
     from tokenizer import TokenMatchIgnoreButKeep
 
-    rules = [
+    rules = TokenRules([
         TokenMatchIgnoreButKeep('NEWLINE', r'\s+', keep='\n'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-    ]
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens('foo   bar  \n   \n  baz\n'):
+        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*')
+    ])
+    tkz = Tokenizer(rules, ["foo   bar  \n   \n  baz\n"])
+    for token in tkz.tokens():
         print(token.id, repr(token.value))
 
 output:
@@ -329,25 +131,7 @@ In this example any whitespace (matching `r'\s+'`) will be ignored, UNLESS it co
 
 ### TokenMatchInt
 
-Converts the value attribute of a token to an integer, and is most-obviously useful for something like a CONSTANT:
-
-    from tokenizer import TokenMatch, Tokenizer, TokenMatchInt
-    rules = [
-        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
-        TokenMatch('EQUALS', r'='),
-    ]
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("foo=-17"):
-        print(token.id, repr(token.value))
-
-will output:
-
-    TokenID.IDENTIFIER 'foo'
-    TokenID.EQUALS '='
-    TokenID.CONSTANT -17
-
-Notice that the `value` attribute of the CONSTANT is now an integer, not a string, as a result of matching the `TokenMatchInt` rule.
+Converts the value attribute of a token to an integer, and is most-obviously useful for something like a CONSTANT as shown in the Quick Start.
 
 ### TokenMatchConvert
 
@@ -355,19 +139,19 @@ This is a generalization of `TokenMatchInt` and allows for arbitrary conversions
 
 Suppose constants can be simple decimal numbers OR numbers in python octal format. The `TokenMatchConvert` subclass takes an argument, `converter`, that will allow for this:
 
-    from tokenizer import TokenMatch, Tokenizer, TokenMatchIgnore
+    from tokenizer import TokenMatch, TokenRules, Tokenizer, TokenMatchIgnore
     from tokenizer import TokenMatchConvert, TokenMatchInt
     import functools
 
     octal = functools.partial(int, base=8)
 
-    rules = [
+    rules = TokenRules([
         TokenMatchConvert('CONSTANT', r'0o([0-7]+)', converter=octal),
         TokenMatchInt('CONSTANT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
-    ]
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("42 0o377"):
+    ])
+    tkz = Tokenizer(rules, ["42 0o377"])
+    for token in tkz.tokens():
         print(token.id, repr(token.value))
 
 Output:
@@ -375,34 +159,251 @@ Output:
     TokenID.CONSTANT 42
     TokenID.CONSTANT 255
 
-This example shows another feature - the same `tokname` can appear in more than one TokenMatch. Sometimes that's advantageous as a way to simplify the individual regular expressions rather than having a single, multi-clause, regular expression for two different formats. As this example shows it also makes it easy to have per-format processing details.
+This example shows another feature - the same token name ('CONSTANT' in this example) can appear in more than one TokenMatch. Sometimes that's advantageous as a way to simplify the individual regular expressions rather than having a single, multi-clause, regular expression for two different formats. As this example shows it also makes it possible to have per-format processing details (e.g., integer conversion or octal conversion, depending on which expression matched).
 
 ### TokenMatchKeyword
 
 The `TokenMatchKeyword` subclass provides a simple way to make keywords be their own unique tokens:
 
-    from tokenizer import TokenMatch, Tokenizer
+    from tokenizer import TokenMatch, Tokenizer, TokenRules
     from tokenizer import TokenMatchKeyword, TokenMatchIgnore
 
-    rules = [
+    rules = TokenRules([
         TokenMatchKeyword('if'),
-        TokenMatchKeyword('then'),
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
+        TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
-    ]
-    tkz = Tokenizer(rules)
-    for token in tkz.string_to_tokens("if this then that"):
+    ])
+
+    tkz = Tokenizer(rules, ["if iff biff"])
+    for token in tkz.tokens():
         print(token.id, repr(token.value))
 
-Note that no regular expression should (generally) be given to `TokenMatchKeyword`. It takes the single string argument given (e.g., 'if') and creates a regular expression that will match it (case-sensitive) and automatically creates a token type with an upper-cased name. The output of the above example will be:
+`TokenMatchKeywod` will automatically create a regular expression to capture exactly the word given, and will automatically create a token name by upper-casing the keyword.
+
+Output from the above code will be:
 
     TokenID.IF 'if'
-    TokenID.IDENTIFIER 'this'
-    TokenID.THEN 'then'
-    TokenID.IDENTIFIER 'that'
+    TokenID.IDENTIFIER 'iff'
+    TokenID.IDENTIFIER 'biff'
 
-__NOTE__: When working with regular expressions, order of presentation matters (this is true also of the examples given in the python 're' module on which this whole exercise is based). In this example it is important the keyword matches appear in the rules prior to the more-general identifier match (which would otherwise match and consume the keywords before they were seen as keywords). This is just a side-effect of the underlying use re-based matching.
+Compare this to the naive:
 
+    # same code as above but with these rules:
+    TokenMatch('IF', 'if'),
+    TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII),
+    TokenMatchIgnore('WHITESPACE', r'\s+'),
+
+which will output:
+
+    TokenID.IF 'if'
+    TokenID.IF 'if'
+    TokenID.IDENTIFIER 'f'
+    TokenID.IDENTIFIER 'biff'
+
+With `TokenMatchKeyword` keep in mind that [order in the rules matters](#ordering); if a generic IDENTIFIER style match occurs before a `TokenMatchKeyword`, it will match first, which is likely not desired:
+
+    # same code but with these rules
+    TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII),
+    TokenMatchKeyword('if'),
+    TokenMatchIgnore('WHITESPACE', r'\s+'),
+
+output:
+
+    TokenID.IDENTIFIER 'if'
+    TokenID.IDENTIFIER 'iff'
+    TokenID.IDENTIFIER 'biff'
+
+
+### Subclassing TokenMatch
+It is fairly straightforward to subclass `TokenMatch` to cover other special circumstances; see [Advanced Topics](#advanced) for details.
+
+## TokenRules
+
+The `TokenRules` object collects multiple `TokenMatch` objects together and automatically creates a `TokenID` Enum from all the names present.
+
+For example:
+
+    from tokenizer import TokenMatch, TokenMatchIgnore, TokenMatchInt
+    from tokenizer import TokenRules
+
+    rules = TokenRules(
+          [
+              TokenMatch('VARIABLE', r'[A-Za-z][A-Za-z0-9]*'),
+              TokenMatchIgnore('WHITESPACE', r'\s+'),
+              TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+          ]
+    )
+    print(rules.TokenID)
+    print(list(rules.TokenID))
+
+This will output:
+
+    <enum 'TokenID'>
+    [<TokenID.VARIABLE: 1>, <TokenID.WHITESPACE: 2>, <TokenID.CONSTANT: 3>]
+
+
+A parser interpreting the stream of tokens will need this `TokenID` to understand the stream of tokens coming from the `Tokenizer`. The `TokenID` can be found in the `TokenRules` object as shown above. The `TokenRules` object is also available as `.rules` in a `Tokenizer` object, as this full example shows:
+
+    from tokenizer import TokenMatch, TokenMatchInt, TokenMatchIgnore
+    from tokenizer import TokenRules, Tokenizer
+
+    input_strings = ["abc123 3750   def",
+                     "xyzzy"]
+    tkz = Tokenizer(TokenRules([
+                       TokenMatch('VARIABLE', r'[A-Za-z][A-Za-z0-9]*'),
+                       TokenMatchIgnore('WHITESPACE', r'\s+'),
+                       TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+                   ]), input_strings)
+    print(list(tkz.rules.TokenID))
+
+which will print:
+
+    [<TokenID.VARIABLE: 1>, <TokenID.WHITESPACE: 2>, <TokenID.CONSTANT: 3>]
+
+<a name=ordering></a>
+### TokenMatch Order in a TokenRule
+
+Note that the ordering of `TokenMatch` objects supplied to `TokenRules` becomes the order in which the regular expressions are examined when looking for a match. The ordering can easily affect the match results. For example:
+
+    from tokenizer import Tokenizer, TokenMatch, TokenRules
+
+    rules = TokenRules([
+        TokenMatch('ONE', r'1'),
+        TokenMatch('TWO', r'2'),
+        TokenMatch('ANY', r'.')
+        ])
+
+    tkz = Tokenizer(rules, ["123"])
+
+    for tok in tkz.tokens():
+        print(tok.id)
+        
+This will output:
+
+    TokenID.ONE
+    TokenID.TWO
+    TokenID.ANY
+
+But:
+
+    from tokenizer import Tokenizer, TokenMatch, TokenRules
+
+    rules = TokenRules([
+        TokenMatch('ANY', r'.'),
+        TokenMatch('ONE', r'1'),
+        TokenMatch('TWO', r'2')
+        ])
+
+    tkz = Tokenizer(rules, ["123"])
+
+    for tok in tkz.tokens():
+        print(tok.id)
+        
+This outputs:
+
+    TokenID.ANY
+    TokenID.ANY
+    TokenID.ANY
+
+because the '.' comes first and matches every individual character so the 'ONE' and 'TWO' rules never fire. Pay attention to ordering accordingly.
+
+
+### Multiple Named Rule Sets
+Using `NamedRuleSet` objects it is possible to supply named groups of `TokenMatch` objects and switch between them on certain conditions. 
+
+This is covered in [Advanced Topics](#advanced).
+
+## Tokenizer
+The `Tokenizer` object has already been introduced through the examples, but additional capabilities are discussed here.
+
+## Input variations
+The examples used above have all provided the input as an iterable of strings supplied to the `Tokenizer` creation. Note that this form works especially well for input files:
+
+    from tokenizer import TokenMatch, TokenMatchInt, TokenRules, Tokenizer
+
+    rules = TokenRules([
+        TokenMatch('WHITESPACE', r'\s+'),
+        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+    ])
+
+    # The file "example-input" should contain two lines:
+    #       abc123 3750   def
+    #       xyzzy
+
+    with open('example-input', 'r') as f:
+        tkz = Tokenizer(rules, f)
+	for token in tkz.tokens():
+	    print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+
+
+This will produce almost the same output as the Quick Start example, except that now there are newline characters between the lines and they show:
+
+    ID = TokenID.IDENTIFIER   VALUE = 'abc123'
+    ID = TokenID.WHITESPACE   VALUE = ' '
+    ID = TokenID.CONSTANT     VALUE = 3750
+    ID = TokenID.WHITESPACE   VALUE = '   '
+    ID = TokenID.IDENTIFIER   VALUE = 'def'
+    ID = TokenID.WHITESPACE   VALUE = '\n'
+    ID = TokenID.IDENTIFIER   VALUE = 'xyzzy'
+    ID = TokenID.WHITESPACE   VALUE = '\n'
+
+Instead of tying the object creation and input together, there are two other ways to supply the input later. One is to supply it to the `tokens` method:
+
+
+    from tokenizer import TokenMatch, TokenMatchInt, TokenRules, Tokenizer
+
+    rules = TokenRules([
+        TokenMatch('WHITESPACE', r'\s+'),
+        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+    ])
+
+    # NOTE: No input specified here
+    tkz = Tokenizer(rules)
+
+    # The file "example-input" should contain two lines:
+    #       abc123 3750   def
+    #       xyzzy
+    with open('example-input', 'r') as f:
+	for token in tkz.tokens(f):
+	    print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+
+This produces output identical to the previous example. This also works with an iterable of strings provided instead of a file.
+
+Finally, there is a method for explicitly working on one string:
+
+
+    from tokenizer import TokenMatch, TokenMatchInt, TokenRules, Tokenizer
+
+    rules = TokenRules([
+        TokenMatch('WHITESPACE', r'\s+'),
+        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
+        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+    ])
+
+    # NOTE: No input specified here
+    tkz = Tokenizer(rules)
+
+    for token in tkz.string_to_tokens('this is a string'):
+        print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+
+which, somewhat obviously, produces:
+
+    ID = TokenID.IDENTIFIER   VALUE = 'this'
+    ID = TokenID.WHITESPACE   VALUE = ' '
+    ID = TokenID.IDENTIFIER   VALUE = 'is'
+    ID = TokenID.WHITESPACE   VALUE = ' '
+    ID = TokenID.IDENTIFIER   VALUE = 'a'
+    ID = TokenID.WHITESPACE   VALUE = ' '
+    ID = TokenID.IDENTIFIER   VALUE = 'string'
+
+which method of providing input is best is entirely application specific.
+
+
+
+# Advanced Topics
+<a name="advanced"></a>
 
 ## Writing custom TokenMatch subclasses
 
@@ -450,29 +451,102 @@ The `action` method returns None if the `keep` character is not in the string va
 
 Perusing the implementations of the various TokenMatch subclasses already provided, plus also looking at some of the unittest code, is the best way to get a more detailed understand if writing a complicated TokenMatch subclass.
 
+<a name=unicode></a>
+### Unicode conveniences
+The IDENTIFIER TokenMatch used in all the examples, whether using ID_ASCII or the explicit regular expression, won't accept Unicode characters.
+For example:
+
+    from tokenizer import TokenMatch, Tokenizer, TokenRules
+
+    rules = TokenRules([
+        TokenMatch('WHITESPACE', r'\s+'),
+        TokenMatch('IDENTIFIER', r'[A-Za-z_][A-Za-z_0-9]*'),
+        TokenMatch('CONSTANT', r'-?[0-9]+'),
+    ])
+
+    tkz = Tokenizer(rules)
+    for token in tkz.string_to_tokens("MötleyCrüe rulz"):
+        print(token.id, repr(token.value))
+
+
+will recognize the first M as an IDENTIFIER by itself:
+
+    TokenID.IDENTIFIER 'M'
+
+and then raise an exception because the `ö` character does not match any rule.
+
+As a convenience, the TokenMatch class defines some ready-made regular expressions for typical identifier patterns.
+
+For Unicode identifiers that are permitted to start with ANY Unicode "alphabetic" character or underscore, followed by any number of such characters but then also including digits (just not in the first character):
+
+    TokenMatch.ID_UNICODE               # = r'[^\W\d]\w*'
+
+If underscores are not allowed:
+
+    TokenMatch.ID_UNICODE_NO_UNDER:    # = r'[^\W\d_][^\W_]*'
+
+The equivalent ASCII-only patterns are fairly obvious, but are also provided as class variables for symmetry:
+
+    TokenMatch.ID_ASCII                 # = r'[A-Za-z_][A-Za-z_0-9]*'
+    TokenMatch.ID_ASCII_NO_UNDER        # = r'[A-Za-z][A-Za-z0-9]*'
+
+Thus, for example:
+
+    TokenMatch('IDENTIFIER', TokenMatch.ID_UNICODE)
+
+will accept identifiers like:
+
+    MötleyCrüe
+
+whereas
+
+    TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII)
+
+will not.
+
+## Overriding the `Token` type
+
+By default a `Tokenizer` generates `Token` objects:
+
+    @dataclass
+    class Token:
+        id: Enum                # The TokenID Enum created automatically
+        value: typing.Any       # typically string but could be int or others
+        location: TokLoc        # source stream info for error reporting
+
+
+This `Token` class is defined in the `tokenizer` module, and is referenced by the `Tokenizer` class using a class variable `Tokenizer.Token` (which defaults to the `Token` class shown above).
+
+If an application requires a different `Token` object for some reason, it can subclass `Tokenizer` like this:
+
+    class MyToken:
+        # ... custom details here
+
+    class MyTokenizer(Tokenizer):
+        Token = MyToken
+
+and then using `MyTokenizer` will result in `MyToken` objects being generated. Note that the code expects the first three arguments to any token init function to be the `id`, `value`, and `location` as suggested by the "class Token:" code shown above.
+
+
 ## Multiple TokenMatch rulesets
 
-Some lexical processing is modal - the appearance of a token will change the lexical processing for the following tokens. To allow for simple versions of this, rules can be grouped into named rulesets and selected based on tokens.
+Some lexical processing is modal - the appearance of a token will change the lexical processing for the following tokens. To allow for simple versions of this, rules can be grouped into multiple `NamedRuleSet` objects and selected based on tokens.
 
 For example:
 
-    from tokenizer import TokenMatch, Tokenizer
+    from tokenizer import TokenMatch, Tokenizer, TokenRules, NamedRuleSet
     from tokenizer import TokenMatchRuleSwitch
 
-    group1 = [
-        TokenMatch('ZEE', r'z'),
-        TokenMatchRuleSwitch('ALTRULES', r'/', rulename='ALT')
-    ]
+    r1 =[TokenMatch('ZEE', r'z'),
+         TokenMatchRuleSwitch('ALTRULES', r'/', rulename='ALT')]
 
-    group2 = [
-        TokenMatch('ZED', r'z'),
-        TokenMatchRuleSwitch('MAINRULES', r'/', rulename=None)
-    ]
+    r2 = [TokenMatch('ZED', r'z'),
+          TokenMatchRuleSwitch('MAINRULES', r'/', rulename=None)]
 
-    # NOTE: None (as a ruleset "name") must always be present.
-    #       It is the initial (or "primary") ruleset. Other ruleset
-    #       names are arbitrary.
-    rules = {None: group1, 'ALT': group2}
+    ns1 = NamedRuleSet(rules=r1, name=None)
+    ns2 = NamedRuleSet(rules=r2, name='ALT')
+
+    rules = TokenRules(ns1, ns2)
 
     tkz = Tokenizer(rules)
     for token in tkz.string_to_tokens('zz/z/z'):
@@ -489,49 +563,11 @@ This will output:
 
 In this example sometimes 'z' is a ZEE, and sometimes a ZED, depending on which ruleset has been activated. The `TokenMatchRuleSwitch` subclass takes a `rulename` argument and switches the active ruleset accordingly.
 
-There can be any number of rulesets with arbitrary names, but one of the rulesets must always have None (the python object, not a string 'None') as its name. That is the default/primary ruleset and the one that is first active when processing begins. NOTE: in the earlier examples where a sequence of TokenMatch objects was passed in, not a mapping, internally they were converted into a one-deep mapping from None to the given sequence.
+If the primary ruleset (the first argument to `TokenRules`) is a naked list of `TokenMatch` objects as has been the case in most of the examples, it is converted to a `NamedRuleSet` with a name of None. Or, said differently, by convention the primary rule set has a name of None. This can be changed though by explicitly specifying a `NamedRuleSet` with a name even for the first (primary) rule set.
 
-In other words:
+In cases where it makes semantic sense for a `TokenRuleSwitch` to simply switch to the "next" rule set, applications can use `TokenRuleSwitch.NEXTRULE` in place of the actual `NamedRuleSet` name for the next rule. Whether this makes things easier or more obscure is a stylistic choice by the application writer.
 
-    rules = [
-        TokenMatch('EQUALS', '=')
-    ]
-    tkz = Tokenizer(rules)
-
-and
-
-    rules = [
-        TokenMatch('EQUALS', '=')
-    ]
-    tkz = Tokenizer({None: rules})
-
-are equivalent.
-
-
-
-If no `rulename` is given to TokenMatchRuleSwitch then it cycles through the rules in (dictionary - as defined) order, wrapping around from the end back to the front. What this means is that in a simple case such as the above, it's not even necessary to specify `rulename` and a bare TokenMatchRuleSwitch will just switch back and forth. Thus, this works if substituted for the group1/group2 initializations:
-
-    group1 = [
-        TokenMatch('ZEE', r'z'),
-        TokenMatchRuleSwitch('SWITCH', r'/')
-    ]
-
-    group2 = [
-        TokenMatch('ZED', r'z'),
-        TokenMatchRuleSwitch('SWITCH', r'/')
-    ]
-
-and the output will be:
-
-    TokenID.ZEE 'z'
-    TokenID.ZEE 'z'
-    TokenID.SWITCH '/'
-    TokenID.ZED 'z'
-    TokenID.SWITCH '/'
-    TokenID.ZEE 'z'
-
-
-One last caution: sometimes, rather than going hog-wild with modal rulesets, it may be simpler to implement a pre-processor on the input instead. For example, most C compilers work that way rather than trying to tokenize the C comment format in some modal way, though it appears to be reasonably possible with this mechanism (see the tokenizer test code `test_C` example).
+One last caution: sometimes, rather than going hog-wild with modal rulesets, it may be simpler to implement a pre-processor on the input instead. For example, most C compilers work that way (preprocessor phase) rather than trying to tokenize the C comment format in some modal way, though it appears to be reasonably possible with this mechanism (see the tokenizer test code `test_C` example).
 
 
 ## Tokenizer odds and ends
@@ -540,12 +576,12 @@ One last caution: sometimes, rather than going hog-wild with modal rulesets, it 
 
 Input can be pre-processed, because anything that duck-types as an iterable of strings is acceptable. For example, if backslash-newline sequences need to be elided (in effect combining two adjacent lines), that's easy to do. A built-in filter, `linefilter' does this:
 
-    from tokenizer import TokenMatch, TokenMatchIgnore, Tokenizer
+    from tokenizer import TokenMatch, TokenMatchIgnore, Tokenizer, TokenRules
 
-    rules = [
+    rules = TokenRules([
         TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
-    ]
+    ])
 
     f = open('example-input', 'r')
     tkz = Tokenizer(rules, Tokenizer.linefilter(f))
@@ -567,11 +603,11 @@ Note that the backslash/newline has been completely filtered out by `linefilter`
 
 This set of rules:
 
-    rules = [
+    rules = TokenRules([
         TokenMatch('CONSTANT', r'1b[01]+'),
         TokenMatchInt('CONSTANT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
-    ]
+    ])
 
 recognizes two different types of constants, the usual decimal digit format but also binary representations such as `1b0`, `1b101`, etc.
 
@@ -589,18 +625,18 @@ If the value is too big then `alttokname` is None and the base class `action` wi
 
 With this subclass, the rules will look like this:
 
-    rules = [
+    rules = TokenRules([
         TokenMatchBinaryByte('CONSTANT', r'1b[01]+'),
         TokenMatchInt('CONSTANT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
         TokenIDOnly('BINARYBYTE'),
-    ]
+    ])
 
 Note that `TokenIDOnly` is being used to introduce the BINARYBYTE token which appears to have no rule (but `TokenMatchBinaryByte` will create such tokens when appropriate).
 
 Putting this all together:
 
-    from tokenizer import Tokenizer, TokenMatchInt
+    from tokenizer import Tokenizer, TokenMatchInt, TokenRules
     from tokenizer import TokenMatch, TokenMatchIgnore, TokenIDOnly
 
     class TokenMatchBinaryByte(TokenMatch):
@@ -609,12 +645,12 @@ Putting this all together:
             alttokname = None if b > 255 else 'BINARYBYTE'
             return super().action(b, loc, tkz, name=alttokname)
 
-    rules = [
+    rules = TokenRules([
         TokenMatchBinaryByte('CONSTANT', r'1b[01]+'),
         TokenMatchInt('CONSTANT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
         TokenIDOnly('BINARYBYTE'),
-    ]
+    ])
 
     tkz = Tokenizer(rules)
     for t in tkz.string_to_tokens(r'1b0 1b100100100 1b111 42'):
@@ -627,10 +663,9 @@ will output:
     TokenID.BINARYBYTE 7
     TokenID.CONSTANT 42
 
-A variation of this technique is also useful for returning an entirely different __class__ of Token if desired; see the next section.
-
 
 # TokStreamEnhancer
+<a name="tkenhance"></a>
 
 A separate class, `TokStreamEnhancer`, provides higher-level functionality on the token stream generated by `Tokenizer`.
 
@@ -797,3 +832,24 @@ It is possible to nest contexts, though programmers are cautioned that the seman
     t4 = xz.gettok()
 
 Figuring out what tokens `t3` and `t4` are is left as an exercise for the programmer.
+
+xxxxxxxxxx
+
+
+```
+foo
+```
+
+
+
+
+
+The `tokenizer` module also defines a `TokStreamEnhancer` class, providing useful higher-level functions on the stream of `Token` objects coming from a `Tokenizer`. It allows:
+
+ - Concatenation of multiple input streams.
+ - N-level "peek" / "unget".
+ - A way to remember ("mark") a spot in the token stream and, if desired, unget tokens ("unwind") all the way back to that point.
+ - Two more ways (beyond just StopIteration from the `token` method/generator) to handle EOF: a one-time EOF token prior to the StopIteration, or an infinite supply of EOF tokens (never causing StopIteration).
+
+See [TokStreamEnhancer](#tkenhance) section for details.
+
