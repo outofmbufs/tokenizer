@@ -1,7 +1,8 @@
 # A generic tokenizer driven by regular expressions
 
-from collections import namedtuple
+from dataclasses import dataclass, field, KW_ONLY
 from enum import Enum
+import typing
 import re
 
 # Regular-expression line-oriented tokenizer.
@@ -47,22 +48,34 @@ import re
 #
 # NOTE: A bare TokLoc() can be specified if none of this is useful/known.
 #
-TokLoc = namedtuple('TokLoc',
-                    ['s', 'sourcename', 'lineno', 'startpos', 'endpos'],
-                    defaults=["", "unknown", None, 0, 0])
+@dataclass
+class TokLoc:
+    s: str = ""
+    sourcename: str = "unknown"
+    lineno: int | None = None
+    startpos: int = 0
+    endpos: int = 0
+
+
+# This Token class is the Token type produced by the Tokenizer.
+# Subclasses can override if necessary; define a different class and
+# then override the class-level variable "Token". See test_subtoken in
+# the unittests for an example of this.
+
+@dataclass
+class Token:
+    id: Enum                   # The TokenID Enum created automatically
+    value: typing.Any          # typically string but could be int or others
+    location: TokLoc           # source stream info for error reporting
 
 
 class Tokenizer:
     """Break iterables of strings into Tokens with rules from regexps."""
 
-    # This Token class variable is the default Token type produced by
-    # the Tokenizer. Subclasses can override if necessary.
-    #
-    # As defined here a Token has an id, a value, and a 'location'
-    # (typically a TokLoc describing the line location of the match).
+    # subclasses can change the Token type produced by overriding this
+    Token = Token
 
-    Token = namedtuple('Token', ['id', 'value', 'location'])
-
+    # TOKENIZER
     def __init__(self, rules, strings=None, /, *, loc=None):
         """Set up a Tokenizer; see tokens() to generate tokens.
 
@@ -110,10 +123,10 @@ class Tokenizer:
             self.sourcename = loc.sourcename
             self.lineno = loc.lineno
 
+        # distinguish between line number tracking and not...
         try:
             g = enumerate(strings, start=self.lineno)
         except TypeError:
-            # self.lineno is (presumably) None, so no linenumbers
             g = ((None, s) for s in strings)
 
         for i, s in g:
@@ -142,10 +155,12 @@ class Tokenizer:
             if tm is None or start != so_far:
                 break
 
+            # build the TokLok for error reporting
             so_far = stoprel + baseoffset   # end of processed chars in s
-            tok = tm.action(
-                value, TokLoc(s, sourcename, lineno, start, so_far), self)
-            if tok is not None:
+            loc = TokLoc(s, sourcename, lineno, start, so_far)
+
+            # perform the TokenMatch "action" and if all good, yield a token
+            if (tok := tm.action(value, loc, self)) is not None:
                 yield tok
 
         # If haven't made it to the end, something didn't match along the way
@@ -232,25 +247,29 @@ class Tokenizer:
         yield from makeups
 
 
-# NamedRuleSet collects TokenMatch objects together along with a
+# A NamedRuleSet collects TokenMatch objects together along with a
 # name, and is useful for creating TokenRules with multiple such sets.
 # This is unnecessary in the standard/simple case where there is only
 # one (unnamed) set of TokenMatch objects; those can be given to
 # TokenRules directly.
+@dataclass
 class NamedRuleSet:
-    def __init__(self, rules, /, *, name=None):
+    rules: typing.List
+    name: typing.Optional[str] = None
 
+    pmap: dict = field(init=False)        # created from the rules
+    joined_rx: str = field(init=False)    # ...
+
+    def __post_init__(self):
         # Create one enormous "or" regexp with (?P=name) annotations
         # for each clause within it. The 'name' is a "pname" - not a
         # tokname - because toknames can appear multiple times in rules.
         # The pmap attribute maps these annotation names to token names
-        self.pmap = {f"PN{i:04d}": tm for i, tm in enumerate(rules)}
 
-        # One Massive regexp to rule them all
+        self.pmap = {f"PN{i:04d}": tm for i, tm in enumerate(self.rules)}
         self.joined_rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
                                   for pname, tm in self.pmap.items()
                                   if tm.regexp is not None)
-        self.name = name
 
 
 #
@@ -263,6 +282,9 @@ class NamedRuleSet:
 #              TokenMatchIgnore('WHITESPACE', r'\s+'),
 #              TokenMatchInt('CONSTANT', r'-?[0-9]+'),
 #          )]
+#
+# In more complicated use cases, in addition to the primary_rules specified
+# as above any additional number of NamedRuleSet objects can be given.
 #
 class TokenRules:
     def __init__(self, primary_rules, *alt_rules):
@@ -309,12 +331,12 @@ class TokenMatch:
     #           how-to-match-alphabetical-chars-without-
     #           numeric-chars-with-python-regexp
     #
-    id_unicode = r'[^\W\d]\w*'
-    id_unicode_no_under = r'[^\W\d_][^\W_]*'
+    UNICODE: typing.ClassVar[str] = r'[^\W\d]\w*'
+    UNICODE_NO_UNDER: typing.ClassVar[str] = r'[^\W\d_][^\W_]*'
 
     # The ASCII versions are traditional/easy
-    id_ascii = r'[A-Za-z_][A-Za-z_0-9]*'
-    id_ascii_no_under = r'[A-Za-z][A-Za-z0-9]*'
+    ASCII: typing.ClassVar[str] = r'[A-Za-z_][A-Za-z_0-9]*'
+    ASCII_NO_UNDER: typing.ClassVar[str] = r'[A-Za-z][A-Za-z0-9]*'
 
     def __init__(self, tokname, regexp, /):
         self.tokname = tokname
@@ -340,9 +362,6 @@ class TokenMatch:
     def action(self, val, loc, tkz, /, *, name=None):
         return tkz.Token(
             tkz.rules.TokenID[name or self.tokname], self._value(val), loc)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.tokname}, {self.regexp})"
 
 
 class TokenIDOnly(TokenMatch):
@@ -391,7 +410,7 @@ class TokenMatchKeyword(TokenMatch):
 
             TokenMatch('IF', r'(if)(magic)
 
-       where 'magic' is "not the TokenMatch.id_unicode expression"
+       where 'magic' is "not the TokenMatch.UNICODE expression"
     """
     def __init__(self, tokname, regexp=None, *args, **kwargs):
         if regexp is None:
@@ -400,7 +419,7 @@ class TokenMatchKeyword(TokenMatch):
 
     # broken out so can be overridden if application has other syntax
     def keyword_regexp(self, tokname):
-        return f"({tokname})(?!{TokenMatch.id_unicode})"
+        return f"({tokname})(?!{TokenMatch.UNICODE})"
 
 
 class TokenMatchIgnoreButKeep(TokenMatch):
@@ -441,7 +460,7 @@ if __name__ == "__main__":
         def test1(self):
             rules = TokenRules([
                 TokenMatchIgnoreButKeep('NEWLINE', r'\s+', keep='\n'),
-                TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
+                TokenMatch('IDENTIFIER', TokenMatch.UNICODE),
                 TokenMatchInt('CONSTANT', r'-?[0-9]+'),
             ])
             s = "    abc123 def _has_underbars_ \n\n  ghi_jkl     123456\n"
@@ -467,14 +486,14 @@ if __name__ == "__main__":
             s = "MötleyCrüe 4_foo_bar77"
             testvectors = (
                 #   (RULES, EXPECTED)
-                (TokenRules((TokenMatch('ID', TokenMatch.id_unicode),
+                (TokenRules((TokenMatch('ID', TokenMatch.UNICODE),
                              TokenMatchIgnore('WHITESPACE', r'\s+'),
                              TokenMatch('DEBRIS', '.'))),
                  (('ID', 'MötleyCrüe'),
                   ('DEBRIS', '4'),
                   ('ID', '_foo_bar77'))
                  ),
-                (TokenRules((TokenMatch('ID', TokenMatch.id_unicode_no_under),
+                (TokenRules((TokenMatch('ID', TokenMatch.UNICODE_NO_UNDER),
                              TokenMatchIgnore('WHITESPACE', r'\s+'),
                              TokenMatch('DEBRIS', '.'))),
                  (('ID', 'MötleyCrüe'),
@@ -484,7 +503,7 @@ if __name__ == "__main__":
                   ('DEBRIS', '_'),
                   ('ID', 'bar77'))
                  ),
-                (TokenRules((TokenMatch('ID', TokenMatch.id_ascii),
+                (TokenRules((TokenMatch('ID', TokenMatch.ASCII),
                             TokenMatchIgnore('WHITESPACE', r'\s+'),
                             TokenMatch('DEBRIS', '.'))),
                  (('ID', 'M'),
@@ -495,7 +514,7 @@ if __name__ == "__main__":
                   ('DEBRIS', '4'),
                   ('ID', '_foo_bar77'))
                  ),
-                (TokenRules((TokenMatch('ID', TokenMatch.id_ascii_no_under),
+                (TokenRules((TokenMatch('ID', TokenMatch.ASCII_NO_UNDER),
                              TokenMatchIgnore('WHITESPACE', r'\s+'),
                              TokenMatch('DEBRIS', '.'))),
                  (('ID', 'M'),
@@ -587,7 +606,7 @@ if __name__ == "__main__":
                 # just a few other lexical elements thrown in for example
                 TokenMatch('LBRACE', r'{'),
                 TokenMatch('RBRACE', r'}'),
-                TokenMatch('IDENTIFIER', TokenMatch.id_ascii),
+                TokenMatch('IDENTIFIER', TokenMatch.ASCII),
                 TokenMatchRuleSwitch(
                     'COMMENT_START', r'/\*', rulename=nextrule),
                 TokenMatch('BAD', r'.'),
@@ -771,6 +790,28 @@ if __name__ == "__main__":
             tkz = Tokenizer(rules)
             classes = [t.__class__ for t in tkz.string_to_tokens('0120')]
             self.assertEqual(classes, expected)
+
+        # this tests whether the Token type can successfully be overridden
+        # by subclassing Tokenizer
+        def test_subclasstoken(self):
+
+            @dataclass
+            class MyToken:
+                id: Enum
+                value: str
+                location: TokLoc
+
+                def __post_init__(self):
+                    self.foo = 'bar'
+
+            class MyTokenizer(Tokenizer):
+                Token = MyToken
+
+            rules = TokenRules([TokenMatch('A', 'a')])
+            s = "aa"
+            tkz = MyTokenizer(rules, [s])
+            for t in tkz.tokens():
+                self.assertEqual(t.foo, 'bar')
 
         def test_keywords(self):
             rules = TokenRules([
