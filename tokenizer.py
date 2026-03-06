@@ -252,7 +252,7 @@ class Tokenizer:
 # This is unnecessary in the standard/simple case where there is only
 # one (unnamed) set of TokenMatch objects; those can be given to
 # TokenRules directly.
-@dataclass
+@dataclass(kw_only=True)
 class NamedRuleSet:
     rules: typing.List
     name: typing.Optional[str] = None
@@ -296,7 +296,7 @@ class TokenRules:
         try:
             self.primary_rulename = primary_rules.name
         except AttributeError:
-            primary_rules = NamedRuleSet(primary_rules)
+            primary_rules = NamedRuleSet(rules=primary_rules)
             self.primary_rulename = primary_rules.name
 
         if self.primary_rulename in (n_r.name for n_r in alt_rules):
@@ -331,12 +331,12 @@ class TokenMatch:
     #           how-to-match-alphabetical-chars-without-
     #           numeric-chars-with-python-regexp
     #
-    UNICODE: typing.ClassVar[str] = r'[^\W\d]\w*'
-    UNICODE_NO_UNDER: typing.ClassVar[str] = r'[^\W\d_][^\W_]*'
+    ID_UNICODE: typing.ClassVar[str] = r'[^\W\d]\w*'
+    ID_UNICODE_NO_UNDER: typing.ClassVar[str] = r'[^\W\d_][^\W_]*'
 
     # The ASCII versions are traditional/easy
-    ASCII: typing.ClassVar[str] = r'[A-Za-z_][A-Za-z_0-9]*'
-    ASCII_NO_UNDER: typing.ClassVar[str] = r'[A-Za-z][A-Za-z0-9]*'
+    ID_ASCII = r'[A-Za-z_][A-Za-z_0-9]*'
+    ID_ASCII_NO_UNDER = r'[A-Za-z][A-Za-z0-9]*'
 
     def __init__(self, tokname, regexp, /):
         self.tokname = tokname
@@ -410,7 +410,7 @@ class TokenMatchKeyword(TokenMatch):
 
             TokenMatch('IF', r'(if)(magic)
 
-       where 'magic' is "not the TokenMatch.UNICODE expression"
+       where 'magic' is "not the TokenMatch.ID_UNICODE expression"
     """
     def __init__(self, tokname, regexp=None, *args, **kwargs):
         if regexp is None:
@@ -419,7 +419,7 @@ class TokenMatchKeyword(TokenMatch):
 
     # broken out so can be overridden if application has other syntax
     def keyword_regexp(self, tokname):
-        return f"({tokname})(?!{TokenMatch.UNICODE})"
+        return f"({tokname})(?!{TokenMatch.ID_UNICODE})"
 
 
 class TokenMatchIgnoreButKeep(TokenMatch):
@@ -460,7 +460,7 @@ if __name__ == "__main__":
         def test1(self):
             rules = TokenRules([
                 TokenMatchIgnoreButKeep('NEWLINE', r'\s+', keep='\n'),
-                TokenMatch('IDENTIFIER', TokenMatch.UNICODE),
+                TokenMatch('IDENTIFIER', TokenMatch.ID_UNICODE),
                 TokenMatchInt('CONSTANT', r'-?[0-9]+'),
             ])
             s = "    abc123 def _has_underbars_ \n\n  ghi_jkl     123456\n"
@@ -486,14 +486,14 @@ if __name__ == "__main__":
             s = "MötleyCrüe 4_foo_bar77"
             testvectors = (
                 #   (RULES, EXPECTED)
-                (TokenRules((TokenMatch('ID', TokenMatch.UNICODE),
+                (TokenRules((TokenMatch('ID', TokenMatch.ID_UNICODE),
                              TokenMatchIgnore('WHITESPACE', r'\s+'),
                              TokenMatch('DEBRIS', '.'))),
                  (('ID', 'MötleyCrüe'),
                   ('DEBRIS', '4'),
                   ('ID', '_foo_bar77'))
                  ),
-                (TokenRules((TokenMatch('ID', TokenMatch.UNICODE_NO_UNDER),
+                (TokenRules((TokenMatch('ID', TokenMatch.ID_UNICODE_NO_UNDER),
                              TokenMatchIgnore('WHITESPACE', r'\s+'),
                              TokenMatch('DEBRIS', '.'))),
                  (('ID', 'MötleyCrüe'),
@@ -503,7 +503,7 @@ if __name__ == "__main__":
                   ('DEBRIS', '_'),
                   ('ID', 'bar77'))
                  ),
-                (TokenRules((TokenMatch('ID', TokenMatch.ASCII),
+                (TokenRules((TokenMatch('ID', TokenMatch.ID_ASCII),
                             TokenMatchIgnore('WHITESPACE', r'\s+'),
                             TokenMatch('DEBRIS', '.'))),
                  (('ID', 'M'),
@@ -514,7 +514,7 @@ if __name__ == "__main__":
                   ('DEBRIS', '4'),
                   ('ID', '_foo_bar77'))
                  ),
-                (TokenRules((TokenMatch('ID', TokenMatch.ASCII_NO_UNDER),
+                (TokenRules((TokenMatch('ID', TokenMatch.ID_ASCII_NO_UNDER),
                              TokenMatchIgnore('WHITESPACE', r'\s+'),
                              TokenMatch('DEBRIS', '.'))),
                  (('ID', 'M'),
@@ -606,12 +606,12 @@ if __name__ == "__main__":
                 # just a few other lexical elements thrown in for example
                 TokenMatch('LBRACE', r'{'),
                 TokenMatch('RBRACE', r'}'),
-                TokenMatch('IDENTIFIER', TokenMatch.ASCII),
+                TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII),
                 TokenMatchRuleSwitch(
                     'COMMENT_START', r'/\*', rulename=nextrule),
                 TokenMatch('BAD', r'.'),
             ]
-            mainrules = NamedRuleSet(tms)
+            mainrules = NamedRuleSet(rules=tms)
 
             tms = [
                 # eat everything that is not a star
@@ -623,7 +623,7 @@ if __name__ == "__main__":
                 # when a star is seen that isn't */ this eats it
                 TokenMatchIgnore('C_STAR', r'\*'),
             ]
-            altrules = NamedRuleSet(tms, name='ALT')
+            altrules = NamedRuleSet(rules=tms, name='ALT')
 
             rules = TokenRules(mainrules, altrules)
 
@@ -693,8 +693,8 @@ if __name__ == "__main__":
                 TokenMatchRuleSwitch('MAINRULES', r'/@/')
             ]
 
-            ng1 = NamedRuleSet(group1)
-            ng2 = NamedRuleSet(group2, name='ALT')
+            ng1 = NamedRuleSet(rules=group1)
+            ng2 = NamedRuleSet(rules=group2, name='ALT')
             rules = TokenRules(ng1, ng2)
             tkz = Tokenizer(rules)
             expected = (
@@ -721,17 +721,17 @@ if __name__ == "__main__":
         # It also tests an explicit (not-None) name for the primary rules
         def test_ruleswitch2(self):
 
-            group1 = [
+            r1 = [
                 TokenMatch('ZEE', r'z'),
                 TokenMatchRuleSwitch('SWITCH', r'/@/', rulename='ALT')
             ]
 
-            group2 = [
+            r2 = [
                 TokenMatch('ZED', r'z'),
                 TokenMatchRuleSwitch('SWITCH', r'/@/', rulename='PRIMARY')
             ]
-            ng1 = NamedRuleSet(group1, name='PRIMARY')
-            ng2 = NamedRuleSet(group2, name='ALT')
+            ng1 = NamedRuleSet(rules=r1, name='PRIMARY')
+            ng2 = NamedRuleSet(rules=r2, name='ALT')
             rules = TokenRules(ng1, ng2)
 
             tkz = Tokenizer(rules)
