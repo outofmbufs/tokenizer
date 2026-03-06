@@ -402,8 +402,8 @@ which method of providing input is best is entirely application specific.
 
 
 
-# Advanced Topics
 <a name="advanced"></a>
+# Advanced Topics
 
 ## Writing custom TokenMatch subclasses
 
@@ -832,24 +832,3 @@ It is possible to nest contexts, though programmers are cautioned that the seman
     t4 = xz.gettok()
 
 Figuring out what tokens `t3` and `t4` are is left as an exercise for the programmer.
-
-xxxxxxxxxx
-
-
-```
-foo
-```
-
-
-
-
-
-The `tokenizer` module also defines a `TokStreamEnhancer` class, providing useful higher-level functions on the stream of `Token` objects coming from a `Tokenizer`. It allows:
-
- - Concatenation of multiple input streams.
- - N-level "peek" / "unget".
- - A way to remember ("mark") a spot in the token stream and, if desired, unget tokens ("unwind") all the way back to that point.
- - Two more ways (beyond just StopIteration from the `token` method/generator) to handle EOF: a one-time EOF token prior to the StopIteration, or an infinite supply of EOF tokens (never causing StopIteration).
-
-See [TokStreamEnhancer](#tkenhance) section for details.
-
