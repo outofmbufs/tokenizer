@@ -425,6 +425,9 @@ class TokenMatchKeyword(TokenMatch):
 class TokenMatchIgnoreButKeep(TokenMatch):
     def __init__(self, *args, keep, **kwargs):
         super().__init__(*args, **kwargs)
+
+        if len(keep) > 1:
+            raise ValueError(f"Multiple keeps not supported: {keep=}")
         self.keep = keep
 
     def action(self, val, loc, tkz, /):
