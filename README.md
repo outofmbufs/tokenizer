@@ -632,7 +632,7 @@ This will print:
     ID = TokenID.INT          VALUE = 500
     ID = TokenID.INT          VALUE = 100000
 
-This "works" but is unwieldy, especially for the INT16 patterns. Notice that it also doesn't allow leading zeros, though those presumably could have been put into a fancier regexp than just `'1'` etc.
+This could be made to work (but the regexps would have to be more elaborate so that, for example, '1' doesn't match the '1' in '10'). It is obviously terribly unweildy and still has problems, e.g., with leading zeros. It would be even worse for the INT16 pattern.
 
 Instead a TokenMatch subclass can create Tokens with different TokenID values based on internal logic.
 
