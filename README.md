@@ -449,7 +449,7 @@ The init method takes an extra argument, `keep`, which it stores into the object
 
 The `action` method returns None if the `keep` character is not in the string value (`val`). Returning None instead of returning a token makes the framework discard this match; no token gets generated. If the `keep` is in the `val` string, then a token is generated and this is done by using super() to let the base ('TokenMatch') class handle the details of that. Note, however, that instead of passing the `val` (the string CONTAINING one or more `keep` characters) it passes just the `keep` character, so the token will have (just) that as its value.
 
-Perusing the implementations of the various TokenMatch subclasses already provided, plus also looking at some of the unittest code, is the best way to get a more detailed understand if writing a complicated TokenMatch subclass.
+Perusing the implementations of the various TokenMatch subclasses already provided, plus also looking at some of the unittest code, is the best way to get a more detailed understanding for writing complicated TokenMatch subclasses.
 
 <a name=unicode></a>
 ### Unicode conveniences
@@ -599,73 +599,82 @@ where the first line ends with "backslash newline", the output will be:
 
 Note that the backslash/newline has been completely filtered out by `linefilter` and a single IDENTIFIER that was "split" across that escaped line boundary has been produced. Applications can provide their own, more-elaborate, input filters if necessary.
 
-### Returning a different Token type (TokenID) in an action() method
+### Returning a different TokenID in an action() method
 
-This set of rules:
+Here is a contrived example to illustrate this capability: suppose an application wants all positive integers between from 0 to 255 (inclusive) to be called INT8 tokens, values from 256 to 65535 (inclusive) to be called INT16 tokens, and any other kind of integer to just be an INT.
 
-    rules = TokenRules([
-        TokenMatch('CONSTANT', r'1b[01]+'),
-        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
-        TokenMatchIgnore('WHITESPACE', r'\s+'),
-    ])
-
-recognizes two different types of constants, the usual decimal digit format but also binary representations such as `1b0`, `1b101`, etc.
-
-Suppose the application wants to specifically recognize binary constants that were given in the `1b` syntax AND that fit into one byte, and have them become BINARYBYTE tokens (all other constants, `1b` or not, remain CONSTANT tokens).
-
-The base TokenMatch subclass `action` implementation accepts an optional keyword argument, `name`, which allows overriding the `tokname` attribute in the object itself. Using this feature, a custom `TokenMatchBinaryByte` subclass looks like this:
-
-    class TokenMatchBinaryByte(TokenMatch):
-        def action(self, val, loc, tkz, /):
-            b = int(val[2:], 2)     # 2: to skip the '1b'
-            alttokname = None if b > 255 else 'BINARYBYTE'
-            return super().action(b, loc, tkz, name=alttokname)
-
-If the value is too big then `alttokname` is None and the base class `action` will return a CONSTANT token (because that is what is in the object's `tokname`). However, if the converted value is 255 or less then a BINARYBYTE token will be returned instead.
-
-With this subclass, the rules will look like this:
-
-    rules = TokenRules([
-        TokenMatchBinaryByte('CONSTANT', r'1b[01]+'),
-        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
-        TokenMatchIgnore('WHITESPACE', r'\s+'),
-        TokenIDOnly('BINARYBYTE'),
-    ])
-
-Note that `TokenIDOnly` is being used to introduce the BINARYBYTE token which appears to have no rule (but `TokenMatchBinaryByte` will create such tokens when appropriate).
-
-Putting this all together:
+Conceptually the INT8 cases could be handled this way, ignoring the INT16 cases:
 
     from tokenizer import Tokenizer, TokenMatchInt, TokenRules
     from tokenizer import TokenMatch, TokenMatchIgnore, TokenIDOnly
 
-    class TokenMatchBinaryByte(TokenMatch):
-        def action(self, val, loc, tkz, /):
-            b = int(val[2:], 2)     # 2: to skip the '1b'
-            alttokname = None if b > 255 else 'BINARYBYTE'
-            return super().action(b, loc, tkz, name=alttokname)
-
     rules = TokenRules([
-        TokenMatchBinaryByte('CONSTANT', r'1b[01]+'),
-        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+        TokenMatchInt('INT8', '0'),
+        TokenMatchInt('INT8', '1'),
+
+	# 253 more TokenMatchInt patterns go here
+
+        TokenMatchInt('INT8', '255'),
+        TokenMatchInt('INT', r'-?[0-9]+'),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
-        TokenIDOnly('BINARYBYTE'),
     ])
 
-    tkz = Tokenizer(rules)
-    for t in tkz.string_to_tokens(r'1b0 1b100100100 1b111 42'):
-        print(t.id, repr(t.value))
+    input_strings = ["0 1 255 500 100000"]
+    tkz = Tokenizer(rules, input_strings)
+    for token in tkz.tokens():
+        print(f"ID = {token.id:20s} VALUE = {token.value!r}")
 
-will output:
+This will print:
 
-    TokenID.BINARYBYTE 0
-    TokenID.CONSTANT 292
-    TokenID.BINARYBYTE 7
-    TokenID.CONSTANT 42
+    ID = TokenID.INT8         VALUE = 0
+    ID = TokenID.INT8         VALUE = 1
+    ID = TokenID.INT8         VALUE = 255
+    ID = TokenID.INT          VALUE = 500
+    ID = TokenID.INT          VALUE = 100000
+
+This "works" but is unwieldy, especially for the INT16 patterns. Notice that it also doesn't allow leading zeros, though those presumably could have been put into a fancier regexp than just `'1'` etc.
+
+Instead a TokenMatch subclass can create Tokens with different TokenID values based on internal logic.
+
+In the base `TokenMatch` class the `action` method accepts an optional keyword argument, `name`, which allows overriding the `tokname` (TokenID) attribute for the created Token. Using this feature, a custom `TokenMatchSizedInt` subclass looks like this:
+
+    class TokenMatchSizedInt(TokenMatch):
+        def action(self, val, loc, tkz, /):
+            intval = int(val)
+            if intval >= 0 and intval < 256:
+                alttokname = 'INT8'
+            elif intval >= 256 and intval < 65536:
+                alttokname = 'INT16'
+            else:
+                alttokname = None    # or could have said 'INT'
+            return super().action(intval, loc, tkz, name=alttokname)
+
+If the value is too big then `alttokname` is None and the base class `action` will return an INT token (because that is what is in the object's `tokname`). However, if the converted value meets the criteria for INT8 or INT16 then those TokenIDs will be used.
+
+With this subclass, the rules will look like this:
 
 
-# TokStreamEnhancer
+    rules = TokenRules([
+        TokenMatchSizedInt('INT', r'-?[0-9]+'),
+        TokenMatchIgnore('WHITESPACE', r'\s+'),
+        TokenIDOnly('INT8'),
+        TokenIDOnly('INT16'),
+    ])
+
+and the code, when run, will output:
+
+    ID = TokenID.INT8         VALUE = 0
+    ID = TokenID.INT8         VALUE = 1
+    ID = TokenID.INT8         VALUE = 255
+    ID = TokenID.INT16        VALUE = 500
+    ID = TokenID.INT          VALUE = 100000
+
+
+Note that `TokenIDOnly` is needed to introduce the INT8 and INT16 TokenID values. It does not matter where they appear in the order, but they must be there.
+
+
 <a name="tkenhance"></a>
+# TokStreamEnhancer
 
 A separate class, `TokStreamEnhancer`, provides higher-level functionality on the token stream generated by `Tokenizer`.
 
