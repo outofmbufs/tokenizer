@@ -579,7 +579,7 @@ Input can be pre-processed, because anything that duck-types as an iterable of s
     from tokenizer import TokenMatch, TokenMatchIgnore, Tokenizer, TokenRules
 
     rules = TokenRules([
-        TokenMatch('IDENTIFIER', TokenMatch.id_unicode),
+        TokenMatch('IDENTIFIER', TokenMatch.ID_UNICODE),
         TokenMatchIgnore('WHITESPACE', r'\s+'),
     ])
 
