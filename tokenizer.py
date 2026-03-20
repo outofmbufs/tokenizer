@@ -163,7 +163,11 @@ class Tokenizer:
             loc = TokLoc(s, sourcename, lineno, start, so_far)
 
             # perform the TokenMatch "action" and if all good, yield a token
-            if (tok := tm.action(value, loc, self)) is not None:
+            try:
+                tok = tm.action(value, loc, self)
+            except TypeError:
+                tok = tm.action        # usually this means tok = None
+            if tok is not None:
                 yield tok
 
         # If haven't made it to the end, something didn't match along the way
@@ -360,16 +364,19 @@ class TokenMatch:
                     self.__class__.__name__ +
                     f" {self.tokname}, bad regexp: '{self.regexp}'") from None
 
-    # NOTATIONAL convenience for subclasses that just need to change
-    # the value. They can override this (with a simpler signature)
-    # instead of action() if that's all they need to do.
-    def _value(self, val, /):
+    # NOTATIONAL convenience for subclasses that convert the value.
+    # They can override this instead of action(). Default is no conversion.
+    def valconvert(self, val, /):
+        """Convert 'val' from string to token-specific type."""
         return val
 
-    def action(self, val, loc, tkz, /) -> Token:
-        """create a token from the lexically matched string ('val')"""
-        tkid = tkz.rules.TokenID[self.tokname]
-        return tkz.Token(tkid, self._value(val), loc)
+    def name2enum(self, tkz, /, name=None):
+        """convenience: get a TokenID (enum) from a name."""
+        return tkz.rules.TokenID[name or self.tokname]
+
+    def action(self, val, loc, tkz, /) -> Token | None:
+        """Called by the framework to create a Token."""
+        return tkz.Token(self.name2enum(tkz), self.valconvert(val), loc)
 
 
 class TokenIDOnly(TokenMatch):
@@ -378,17 +385,14 @@ class TokenIDOnly(TokenMatch):
     def __init__(self, tokname):
         super().__init__(tokname, None)
 
-    def __unreachable(self, *_, **__):    # *_, *__ keeps pylint happy
-        assert False, "This method is supposed to be unreachable"
-
-    action = __unreachable
+    def action(self, val, loc, tkz, /):
+        assert False, "action should not be reachable"
 
 
 class TokenMatchIgnore(TokenMatch):
     """TokenMatch that eats tokens (i.e., matches and ignores them)."""
 
-    def action(self, val, loc, tkz, /):
-        return None
+    action = None
 
 
 class TokenMatchConvert(TokenMatch):
@@ -399,7 +403,7 @@ class TokenMatchConvert(TokenMatch):
              converter:    will be applied to convert .value
         """
         super().__init__(*args, **kwargs)
-        self._value = converter         # check out this awesome hack
+        self.valconvert = converter
 
 
 # for TokenMatchInt the default TokenMatchConvert is fine (default is int)
@@ -439,8 +443,9 @@ class TokenMatchIgnoreButKeep(TokenMatch):
         self.keep = keep
 
     def action(self, val, loc, tkz, /):
-        return super().action(
-            self.keep, loc, tkz) if self.keep in val else None
+        if self.keep not in val:
+            return None
+        return super().action(self.keep, loc, tkz)
 
 
 class TokenMatchRuleSwitch(TokenMatch):

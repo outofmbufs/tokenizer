@@ -411,7 +411,7 @@ Writing custom TokenMatch classes is straightforward; create a subclass that ove
 
     def __init__(self, tokname, regexp, /):
 
-    def _value(self, val, /):
+    def valconvert(self, val, /):
          INPUT: val - the matched string
        RETURNS: a converted value (e.g.: int(val) etc)
 
@@ -421,17 +421,22 @@ Writing custom TokenMatch classes is straightforward; create a subclass that ove
                 tkz - The Tokenizer object itself
        RETURNS: A token, or None (to discard this match)
 
-The simplest subclasses are just conversions from matched value string to something else. They only need to override `_value`. For example, here is one way to implement the TokenMatchInt subclass:
+If the `action` for a particular `TokenMatch` subclass will always return None, it suffices to set the `action` attribute itself to None:
+
+    class Foo(TokenMatch):
+        action = None
+
+The simplest subclasses are just conversions from matched value string to something else. They only need to override `valconvert`. For example, here is one way to implement the TokenMatchInt subclass:
 
     # NOTE: The real implementation of TokenMatchInt is done as
     #       a special case of TokenMatchConvert
     #
     class TokenMatchIntExample(TokenMatch):
-        def _value(self, val, /):
+        def valconvert(self, val, /):
             return int(val)
 
 
-If the subclass needs more control, it can override `action` (and may also need to override init if there are additional parameters required). Here is the actual implementation of TokenMatchIgnoreButKeep:
+If the subclass needs more control, it can override `action` (and may also need to override init if there are additional parameters required). Here is an implementation of TokenMatchIgnoreButKeep:
 
 
     class TokenMatchIgnoreButKeep(TokenMatch):
@@ -508,7 +513,7 @@ will not.
 
 By default a `Tokenizer` generates `Token` objects:
 
-    @dataclass
+    @dataclass(frozen=True)
     class Token:
         id: Enum                # The TokenID Enum created automatically
         value: typing.Any       # typically string but could be int or others
@@ -517,15 +522,63 @@ By default a `Tokenizer` generates `Token` objects:
 
 This `Token` class is defined in the `tokenizer` module, and is referenced by the `Tokenizer` class using a class variable `Tokenizer.Token` (which defaults to the `Token` class shown above).
 
-If an application requires a different `Token` object for some reason, it can subclass `Tokenizer` like this:
+Suppose an application requires a mutable `Token` object (or requires any other additional features in a `Token`). It can define its own `Token` and then subclass `Tokenizer` like this:
 
-    class MyToken:
-        # ... custom details here
+    from dataclasses import dataclass
+    from tokenizer import Tokenizer, TokenMatch, TokenRules, TokLoc
+    from enum import Enum
+    import typing
+
+    @dataclass
+    class MutableToken:    # note: no frozen=True
+        id: Enum
+        value: typing.Any
+        location: TokLoc
+
+    # Override the Token type that will be produced by Tokenizer
+    class MyTokenizer(Tokenizer):
+        Token = MutableToken
+
+    rules = TokenRules([
+        TokenMatch('A', 'a'),
+        TokenMatch('B', 'b')
+    ])
+
+    tkz = MyTokenizer(rules)
+    for token in tkz.string_to_tokens("aabab"):
+        print(token.id, repr(token.value))
+	# this would fail with the built-in immutable Token class
+        token.foo = 'bar'
+
+Note that the `Tokenizer` framework expects the signature for creating a token object to be the three arguments as defined in the built-in `Token` class; if other arguments are needed they will have to be supplied by partial or other magic:
+
+    from tokenizer import Tokenizer, TokenMatch, TokenRules, Token
+    from functools import partial
+
+    class ClownToken(Token):
+        def __init__(self, id, value, loc, /, clown):
+            super().__init__(id, value, loc)
+            self.clown = clown
 
     class MyTokenizer(Tokenizer):
-        Token = MyToken
+        Token = partial(ClownToken, clown='bozo')
 
-and then using `MyTokenizer` will result in `MyToken` objects being generated. Note that the code expects the first three arguments to any token init function to be the `id`, `value`, and `location` as suggested by the "class Token:" code shown above.
+    rules = TokenRules([
+        TokenMatch('A', 'a'),
+        TokenMatch('B', 'b')
+    ])
+
+    tkz = MyTokenizer(rules)
+    for token in tkz.string_to_tokens("aabab"):
+        print(token.id, repr(token.value), token.clown)
+
+This will output:
+
+    TokenID.A 'a' bozo
+    TokenID.A 'a' bozo
+    TokenID.B 'b' bozo
+    TokenID.A 'a' bozo
+    TokenID.B 'b' bozo
 
 
 ## Multiple TokenMatch rulesets
@@ -567,7 +620,7 @@ If the primary ruleset (the first argument to `TokenRules`) is a naked list of `
 
 In cases where it makes semantic sense for a `TokenRuleSwitch` to simply switch to the "next" rule set, applications can use `TokenRuleSwitch.NEXTRULE` in place of the actual `NamedRuleSet` name for the next rule. Whether this makes things easier or more obscure is a stylistic choice by the application writer.
 
-One last caution: sometimes, rather than going hog-wild with modal rulesets, it may be simpler to implement a pre-processor on the input instead. For example, most C compilers work that way (preprocessor phase) rather than trying to tokenize the C comment format in some modal way, though it appears to be reasonably possible with this mechanism (see the tokenizer test code `test_C` example).
+One last caution: sometimes, rather than going hog-wild with modal rulesets, it may be simpler to implement a pre-processor on the input instead. For example, most C compilers work that way (preprocessor phase) rather than trying to tokenize the C comment format in some modal way (or some hyper-clever non-modal way).
 
 
 ## Tokenizer odds and ends
@@ -619,7 +672,7 @@ Conceptually the INT8 cases could be handled this way, ignoring the INT16 cases:
         TokenMatchIgnore('WHITESPACE', r'\s+'),
     ])
 
-    input_strings = ["0 1 255 500 100000"]
+    input_strings = ["0 1 255 500 1000"]
     tkz = Tokenizer(rules, input_strings)
     for token in tkz.tokens():
         print(f"ID = {token.id:20s} VALUE = {token.value!r}")
@@ -630,26 +683,32 @@ This will print:
     ID = TokenID.INT8         VALUE = 1
     ID = TokenID.INT8         VALUE = 255
     ID = TokenID.INT          VALUE = 500
-    ID = TokenID.INT          VALUE = 100000
+    ID = TokenID.INT8         VALUE = 1            # see commentary below
+    ID = TokenID.INT8         VALUE = 0
+    ID = TokenID.INT8         VALUE = 0
+    ID = TokenID.INT8         VALUE = 0
 
-This could be made to work (but the regexps would have to be more elaborate so that, for example, '1' doesn't match the '1' in '10'). It is obviously terribly unweildy and still has problems, e.g., with leading zeros. It would be even worse for the INT16 pattern.
+What happened here? The digits '1' and '0' matched the INT8 expressions. Despite that flaw, this could be made to work, but the regexps will get complicated and there would still have to be 256 TokenMatchInt entries for every possibly INT8 value. This would be even worse for the INT16 pattern.
 
-Instead a TokenMatch subclass can create Tokens with different TokenID values based on internal logic.
+Instead a TokenMatch subclass can create Tokens with different TokenID values based on internal logic, and instead of invoking `TokenMatch.action` method (via super()) it can just make the token itself directly.
 
-In the base `TokenMatch` class the `action` method accepts an optional keyword argument, `name`, which allows overriding the `tokname` (TokenID) attribute for the created Token. Using this feature, a custom `TokenMatchSizedInt` subclass looks like this:
+Thus, for example:
 
-    class TokenMatchSizedInt(TokenMatch):
+    class TokenMatchSizedInt(TokenMatchInt):
         def action(self, val, loc, tkz, /):
             intval = int(val)
             if intval >= 0 and intval < 256:
-                alttokname = 'INT8'
+                tokname = 'INT8'
             elif intval >= 256 and intval < 65536:
-                alttokname = 'INT16'
+                tokname = 'INT16'
             else:
-                alttokname = None    # or could have said 'INT'
-            return super().action(intval, loc, tkz, name=alttokname)
+                tokname = self.tokname
 
-If the value is too big then `alttokname` is None and the base class `action` will return an INT token (because that is what is in the object's `tokname`). However, if the converted value meets the criteria for INT8 or INT16 then those TokenIDs will be used.
+            return tkz.Token(self.name2enum(tkz, name=tokname), intval, loc)
+
+If the value is too big then `action` will return an INT token (because that is what is in the object's `tokname`). However, if the converted value meets the criteria for INT8 or INT16 then those TokenIDs will be used instead
+
+Note that method 'name2enum' is provided by the 'TokenMatch' base class; it conveniently turns a string name (like 'INT8') into the corresponding TokenID enum that 'tkz.Token' requires.
 
 With this subclass, the rules will look like this:
 
@@ -667,8 +726,9 @@ and the code, when run, will output:
     ID = TokenID.INT8         VALUE = 1
     ID = TokenID.INT8         VALUE = 255
     ID = TokenID.INT16        VALUE = 500
-    ID = TokenID.INT          VALUE = 100000
+    ID = TokenID.INT16        VALUE = 1000
 
+and if "100000" is added to the input string that value would show as a `TokenID.INT`.
 
 Note that `TokenIDOnly` is needed to introduce the INT8 and INT16 TokenID values. It does not matter where they appear in the order, but they must be there.
 
