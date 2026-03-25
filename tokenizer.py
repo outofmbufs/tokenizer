@@ -374,7 +374,7 @@ class TokenMatch:
         """convenience: get a TokenID (enum) from a name."""
         return tkz.rules.TokenID[name or self.tokname]
 
-    def action(self, val, loc, tkz, /) -> Token | None:
+    def action(self, val: str, loc: TokLoc, tkz: Tokenizer, /) -> Token | None:
         """Called by the framework to create a Token."""
         return tkz.Token(self.name2enum(tkz), self.valconvert(val), loc)
 
