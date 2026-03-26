@@ -407,52 +407,87 @@ which method of providing input is best is entirely application specific.
 
 ## Writing custom TokenMatch subclasses
 
-Writing custom TokenMatch classes is straightforward; create a subclass that overrides any (or all) of these methods:
+Writing custom TokenMatch classes is straightforward; create a subclass that overrides `__init__` (if needed, e.g., for extra arguments) and `action`:
 
     def __init__(self, tokname, regexp, /):
 
-    def valconvert(self, val, /):
-         INPUT: val - the matched string
-       RETURNS: a converted value (e.g.: int(val) etc)
-
-    def action(self, val, loc, tkz, /):
-        INPUTS: val - the matched string
-                loc - TokLoc token location info (for error reporting)
-                tkz - The Tokenizer object itself
+    def action(self, ta, /):
+        INPUTS: ta - A (mutable) TokenAction object containing
+	        data useful for constructing the token
        RETURNS: A token, or None (to discard this match)
 
-If the `action` for a particular `TokenMatch` subclass will always return None, it suffices to set the `action` attribute itself to None:
+If the `action` for a particular `TokenMatch` subclass will always return None, it suffices to set the `action` attribute itself to None. This, in fact, is how the TokenMatchIgnore subclass is implemented:
 
-    class Foo(TokenMatch):
+    class TokenMatchIgnore(TokenMatch):
         action = None
 
-The simplest subclasses are just conversions from matched value string to something else. They only need to override `valconvert`. For example, here is one way to implement the TokenMatchInt subclass:
+The simplest subclasses are just conversions from matched value string to something else. To do this a subclass can access and alter the `ta` object, which is a TokenAction object declared like this:
+
+    @dataclass
+    class TokenAction:
+        value: typing.Any
+        location: TokLoc
+        tkz: Tokenizer
+        token_id: Enum
+        token_cls: typing.Callable   # usually this is Token (the class)
+
+The `TokenAction` class has one method, `maketoken` that will take all the data in the `TokenAction` object and return a token:
+
+    def maketoken(self):
+        return self.token_cls(self.token_id, self.value, self.location)
+
+Subclasses can alter those attributes as necessary to persuade `maketoken` to do what they want, or, of course, can simply construct the Token object themselves. Whatever works best for the application is fine.
+
+Returning to the example of a value conversion, here is one way to write `TokenMatchInt`:
 
     # NOTE: The real implementation of TokenMatchInt is done as
-    #       a special case of TokenMatchConvert
+    #       a special case of TokenMatchConvert, which is more general.
     #
     class TokenMatchIntExample(TokenMatch):
-        def valconvert(self, val, /):
-            return int(val)
+        def action(self, ta, /):
+            ta.value = int(ta.value)
+            return super().action(ta)
+
+This converts the `ta.value` attribute, converting the string (it always starts out as a string) into a python integer. It then lets the superclass create the token using the mutated `ta` object.
 
 
-If the subclass needs more control, it can override `action` (and may also need to override init if there are additional parameters required). Here is an implementation of TokenMatchIgnoreButKeep:
+If the subclass needs more arguments it can override `__init__` as needed and stash the arguments in the TokenMatch object for use in the subsequent `action` call. Here is an absurd example:
+
+    from tokenizer import TokenMatch, TokenRules, Tokenizer
 
 
-    class TokenMatchIgnoreButKeep(TokenMatch):
-        def __init__(self, *args, keep, **kwargs):
+    class TokenMatchPrintSomething(TokenMatch):
+        def __init__(self, *args, msg, **kwargs):
             super().__init__(*args, **kwargs)
-            self.keep = keep
+            self.msg = msg
 
-        def action(self, val, loc, tkz, /):
-            if self.keep in val:
-                return super().action(self.keep, loc, tkz)
-            else:
-                return None
+        def action(self, ta, /):
+            print(self.msg)
+            return super().action(ta)
 
-The init method takes an extra argument, `keep`, which it stores into the object so `action` will have it when needed. This code also shows the recommended way of handling the other arguments and passing them to super() in a way that minimizes dependencies on the framework signatures.
 
-The `action` method returns None if the `keep` character is not in the string value (`val`). Returning None instead of returning a token makes the framework discard this match; no token gets generated. If the `keep` is in the `val` string, then a token is generated and this is done by using super() to let the base ('TokenMatch') class handle the details of that. Note, however, that instead of passing the `val` (the string CONTAINING one or more `keep` characters) it passes just the `keep` character, so the token will have (just) that as its value.
+    rules = TokenRules(
+          [
+              TokenMatchPrintSomething('A', r'a', msg="foo-A"),
+              TokenMatchPrintSomething('B', r'b', msg="foo-B"),
+          ]
+    )
+
+    tkz = Tokenizer(rules)
+
+    for token in tkz.string_to_tokens('aaba'):
+        print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+
+When run this will output:
+
+    foo-A
+    ID = TokenID.A            VALUE = 'a'
+    foo-A
+    ID = TokenID.A            VALUE = 'a'
+    foo-B
+    ID = TokenID.B            VALUE = 'b'
+    foo-A
+    ID = TokenID.A            VALUE = 'a'
 
 Perusing the implementations of the various TokenMatch subclasses already provided, plus also looking at some of the unittest code, is the best way to get a more detailed understanding for writing complicated TokenMatch subclasses.
 
@@ -522,15 +557,15 @@ By default a `Tokenizer` generates `Token` objects:
 
 This `Token` class is defined in the `tokenizer` module, and is referenced by the `Tokenizer` class using a class variable `Tokenizer.Token` (which defaults to the `Token` class shown above).
 
-Suppose an application requires a mutable `Token` object (or requires any other additional features in a `Token`). It can define its own `Token` and then subclass `Tokenizer` like this:
+If, for example, an application requires a mutable `Token` object (or requires any other additional features in a `Token`), it can define its own `Token` and subclass `Tokenizer` like this:
 
     from dataclasses import dataclass
     from tokenizer import Tokenizer, TokenMatch, TokenRules, TokLoc
     from enum import Enum
     import typing
 
-    @dataclass
-    class MutableToken:    # note: no frozen=True
+    @dataclass             # note: no frozen=True
+    class MutableToken: 
         id: Enum
         value: typing.Any
         location: TokLoc
@@ -654,7 +689,7 @@ Note that the backslash/newline has been completely filtered out by `linefilter`
 
 ### Returning a different TokenID in an action() method
 
-Here is a contrived example to illustrate this capability: suppose an application wants all positive integers between from 0 to 255 (inclusive) to be called INT8 tokens, values from 256 to 65535 (inclusive) to be called INT16 tokens, and any other kind of integer to just be an INT.
+Suppose an application wants all positive integers between from 0 to 255 (inclusive) to be called INT8 tokens, values from 256 to 65535 (inclusive) to be called INT16 tokens, and any other kind of integer to just be an INT.
 
 Conceptually the INT8 cases could be handled this way, ignoring the INT16 cases:
 
@@ -688,30 +723,27 @@ This will print:
     ID = TokenID.INT8         VALUE = 0
     ID = TokenID.INT8         VALUE = 0
 
-What happened here? The digits '1' and '0' matched the INT8 expressions. Despite that flaw, this could be made to work, but the regexps will get complicated and there would still have to be 256 TokenMatchInt entries for every possibly INT8 value. This would be even worse for the INT16 pattern.
+What happened here? The digits '1' and '0' (in the `1000`) matched the INT8 expressions and got interpreted as INT8 tokens. Despite that flaw, this could be made to work, but the regexps will get complicated and there would still have to be 256 TokenMatchInt entries for every possibly INT8 value. This would be even worse for the INT16 pattern.
 
-Instead a TokenMatch subclass can create Tokens with different TokenID values based on internal logic, and instead of invoking `TokenMatch.action` method (via super()) it can just make the token itself directly.
+Instead a TokenMatch subclass can create Tokens with different TokenID values based on internal logic, and mutate the `TokenAction` object accordingly.
 
 Thus, for example:
 
+
     class TokenMatchSizedInt(TokenMatchInt):
-        def action(self, val, loc, tkz, /):
-            intval = int(val)
-            if intval >= 0 and intval < 256:
-                tokname = 'INT8'
-            elif intval >= 256 and intval < 65536:
-                tokname = 'INT16'
-            else:
-                tokname = self.tokname
+        def action(self, ta):
+            ta.value = int(ta.value)      # convert from string
 
-            return tkz.Token(self.name2enum(tkz, name=tokname), intval, loc)
+            if ta.value >= 0 and ta.value < 256:
+                ta.token_id = 'INT8'
+            elif ta.value >= 256 and ta.value < 65536:
+                ta.token_id = 'INT16'
 
-If the value is too big then `action` will return an INT token (because that is what is in the object's `tokname`). However, if the converted value meets the criteria for INT8 or INT16 then those TokenIDs will be used instead
+            return super().action(ta)
 
-Note that method 'name2enum' is provided by the 'TokenMatch' base class; it conveniently turns a string name (like 'INT8') into the corresponding TokenID enum that 'tkz.Token' requires.
+The `token_id` attribute is normally the Enum associated with the token defined by this `TokenMatch`. The `action` method may override that however, and set it to some other value of the Enum or - for convenience - set it to a string (`INT8` or `INT16` in this case). The framework will convert that to the appropriate `TokenID` Enum as necessary.
 
 With this subclass, the rules will look like this:
-
 
     rules = TokenRules([
         TokenMatchSizedInt('INT', r'-?[0-9]+'),
@@ -720,18 +752,17 @@ With this subclass, the rules will look like this:
         TokenIDOnly('INT16'),
     ])
 
-and the code, when run, will output:
+and if one extra number, "8675309" is added o the input string, the output will 
+look like this:
 
     ID = TokenID.INT8         VALUE = 0
     ID = TokenID.INT8         VALUE = 1
     ID = TokenID.INT8         VALUE = 255
     ID = TokenID.INT16        VALUE = 500
     ID = TokenID.INT16        VALUE = 1000
+    ID = TokenID.INT          VALUE = 8675309
 
-and if "100000" is added to the input string that value would show as a `TokenID.INT`.
-
-Note that `TokenIDOnly` is needed to introduce the INT8 and INT16 TokenID values. It does not matter where they appear in the order, but they must be there.
-
+Note that `TokenIDOnly` is needed to introduce the INT8 and INT16 TokenID values. It does not matter where they appear in the order, but they must be there so they are part of the automatically generated TokenID Enum.
 
 <a name="tkenhance"></a>
 # TokStreamEnhancer

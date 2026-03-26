@@ -153,18 +153,26 @@ class Tokenizer:
                 baseoffset = so_far
 
             # 'tm' is the TokenMatch that matched
-            tm, value, startrel, stoprel = self._nextmatch(g)
-            start = startrel + baseoffset
-            if tm is None or start != so_far:
+            tm, value, startpos, stoppos = self._nextmatch(g)
+            startpos += baseoffset       # convert from relative
+            stoppos += baseoffset
+            if tm is None or startpos != so_far:
                 break
 
             # build the TokLok for error reporting
-            so_far = stoprel + baseoffset   # end of processed chars in s
-            loc = TokLoc(s, sourcename, lineno, start, so_far)
+            so_far = stoppos
 
             # perform the TokenMatch "action" and if all good, yield a token
+
+            context = TokenAction(
+                value=value,
+                location=TokLoc(s, sourcename, lineno, startpos, so_far),
+                tkz=self,
+                token_id=self.rules.TokenID[tm.tokname],
+                token_cls=self.Token
+            )
             try:
-                tok = tm.action(value, loc, self)
+                tok = tm.action(context)
             except TypeError:
                 tok = tm.action        # usually this means tok = None
             if tok is not None:
@@ -328,6 +336,38 @@ class TokenRules:
         return Enum('TokenID', allnames)
 
 
+# TokenAction is a mutable context passed to a TokenMatch.action method.
+# When the action method is ready to make a token it can use the maketoken
+# method to construct a token from the context info (though if the application
+# requires something else, it is free to make the token any way it wants).
+# Subclasses of TokenMatch will usually tweak this context as necessary; see,
+# for example, TokenMatchConvert which modifies the value attribute.
+#
+
+@dataclass
+class TokenAction:
+    """Context for the action method in a TokenMatch."""
+
+    value: typing.Any
+    location: TokLoc
+    tkz: Tokenizer
+    token_id: Enum | str
+    token_cls: typing.Callable      # almost always this is Token (the class)
+
+    def maketoken(self):
+        """Construct a token from the context."""
+
+        # as a convenience, if token_id is convertible to the Enum, convert it
+        try:
+            tkid = self.tkz.rules.TokenID[self.token_id]
+        except KeyError:
+            if isinstance(self.token_id, self.tkz.rules.TokenID):
+                tkid = self.token_id
+            else:
+                raise
+        return self.token_cls(tkid, self.value, self.location)
+
+
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
 # expression (e.g., r'-?[0-9]+'), and its action() method for
 # processing the match and creating the token.
@@ -364,19 +404,9 @@ class TokenMatch:
                     self.__class__.__name__ +
                     f" {self.tokname}, bad regexp: '{self.regexp}'") from None
 
-    # NOTATIONAL convenience for subclasses that convert the value.
-    # They can override this instead of action(). Default is no conversion.
-    def valconvert(self, val, /):
-        """Convert 'val' from string to token-specific type."""
-        return val
-
-    def name2enum(self, tkz, /, name=None):
-        """convenience: get a TokenID (enum) from a name."""
-        return tkz.rules.TokenID[name or self.tokname]
-
-    def action(self, val: str, loc: TokLoc, tkz: Tokenizer, /) -> Token | None:
+    def action(self, ta: TokenAction, /) -> Token | None:
         """Called by the framework to create a Token."""
-        return tkz.Token(self.name2enum(tkz), self.valconvert(val), loc)
+        return ta.maketoken()
 
 
 class TokenIDOnly(TokenMatch):
@@ -385,7 +415,7 @@ class TokenIDOnly(TokenMatch):
     def __init__(self, tokname):
         super().__init__(tokname, None)
 
-    def action(self, val, loc, tkz, /):
+    def action(self, ta, /):
         assert False, "action should not be reachable"
 
 
@@ -404,6 +434,10 @@ class TokenMatchConvert(TokenMatch):
         """
         super().__init__(*args, **kwargs)
         self.valconvert = converter
+
+    def action(self, ta, /):
+        ta.value = self.valconvert(ta.value)
+        return super().action(ta)
 
 
 # for TokenMatchInt the default TokenMatchConvert is fine (default is int)
@@ -442,10 +476,11 @@ class TokenMatchIgnoreButKeep(TokenMatch):
             raise ValueError(f"Multiple keeps not supported: {keep=}")
         self.keep = keep
 
-    def action(self, val, loc, tkz, /):
-        if self.keep not in val:
+    def action(self, ta, /):
+        if self.keep not in ta.value:
             return None
-        return super().action(self.keep, loc, tkz)
+        ta.value = self.keep
+        return super().action(ta)
 
 
 class TokenMatchRuleSwitch(TokenMatch):
@@ -457,12 +492,12 @@ class TokenMatchRuleSwitch(TokenMatch):
         super().__init__(*args, **kwargs)
         self.rulename = rulename
 
-    def action(self, val, loc, tkz, /):
+    def action(self, ta, /):
         if self.rulename is self.NEXTRULE:
-            tkz.nextruleset()
+            ta.tkz.nextruleset()
         else:
-            tkz.activate_ruleset(self.rulename)
-        return super().action(val, loc, tkz)
+            ta.tkz.activate_ruleset(self.rulename)
+        return super().action(ta)
 
 
 if __name__ == "__main__":
