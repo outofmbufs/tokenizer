@@ -123,6 +123,45 @@ class TestMethods(unittest.TestCase):
         for id, t in strictzip(expected, tkz):
             self.assertEqual(id, t.id)
 
+    # this used to fail because tokens() couldn't iterate None
+    def test_noinput(self):
+        tkz = Tokenizer(TokenRules([TokenMatch('A', 'a')]))
+        toks = list(tkz)
+        self.assertEqual(len(toks), 0)
+
+    def test_locations(self):
+        rules = TokenRules([TokenMatch('ONE_A', r'a'),
+                            TokenMatch('ANY_B', r'b+'),
+                            TokenMatch('CAB', r'ca+b')])
+
+        tkz = Tokenizer(rules, ["abaabbbcaaabbxcab"])
+
+        expected = [
+            # TokenID, startpos, endpos
+            (rules.TokenID.ONE_A, 0, 1),
+            (rules.TokenID.ANY_B, 1, 2),
+            (rules.TokenID.ONE_A, 2, 3),
+            (rules.TokenID.ONE_A, 3, 4),
+            (rules.TokenID.ANY_B, 4, 7),
+            (rules.TokenID.CAB, 7, 12),
+            (rules.TokenID.ANY_B, 12, 13),
+            (Tokenizer.MatchError, 13),
+            ]
+
+        tg = tkz.tokens()
+        for xp in expected:
+            try:
+                result = next(tg)
+            except Tokenizer.MatchError as x:
+                self.assertEqual(xp[1], x.location.startpos)
+                # the end position is always the start position because
+                # no characters are consumed (by definition) on match fail
+                self.assertEqual(x.location.startpos, x.location.endpos)
+            else:
+                self.assertEqual(xp[0], result.id)
+                self.assertEqual(xp[1], result.location.startpos)
+                self.assertEqual(xp[2], result.location.endpos)
+
     def test_lines(self):
         rules = TokenRules([TokenMatch('A', 'a'),
                             TokenMatch('B', 'b'),
@@ -162,7 +201,7 @@ class TestMethods(unittest.TestCase):
                 t = next(g)
             except Tokenizer.MatchError as e:
                 # should be the 'x' in the reported lineno
-                c = lines[e.loc.lineno][e.loc.startpos]
+                c = lines[e.location.lineno][e.location.startpos]
                 self.assertEqual(c, 'x')
             else:
                 self.assertEqual(expected_id, t.id)
@@ -340,14 +379,12 @@ class TestMethods(unittest.TestCase):
                 self.location = location
 
         class TokenMatch_1(TokenMatch):
-            def action(self, val, loc, tkz, /):
-                tokid = tkz.rules.TokenID[self.tokname]
-                return MyToken_1(tokid, val, loc)
+            def action(self, ta, /):
+                return MyToken_1(ta.token_id, ta.value, ta.location)
 
         class TokenMatch_2(TokenMatch):
-            def action(self, val, loc, tkz, /):
-                tokid = tkz.rules.TokenID[self.tokname]
-                return MyToken_2(tokid, val, loc)
+            def action(self, ta, /):
+                return MyToken_2(ta.token_id, ta.value, ta.location)
 
         rules = TokenRules([
             TokenMatch('NATIVE', '0'),
@@ -382,6 +419,14 @@ class TestMethods(unittest.TestCase):
         tkz = MyTokenizer(rules, [s])
         for t in tkz.tokens():
             self.assertEqual(t.foo, 'bar')
+
+    def test_locinfo(self):
+        t = Tokenizer(TokenRules([TokenMatch('A', 'a')]))
+        toks = list(t.tokens(["a"], loc=TokLoc(sourcename='foo', lineno=17)))
+        self.assertEqual(len(toks), 1)
+        k = toks[0]
+        self.assertEqual(k.location.sourcename, 'foo')
+        self.assertEqual(k.location.lineno, 17)
 
     def test_keywords(self):
         rules = TokenRules([
