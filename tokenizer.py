@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
+import itertools
 import typing
 import re
 
@@ -104,7 +105,7 @@ class Tokenizer:
 
         self.rules = rules
         self.current_ruleset = rules.rulesets[rules.primary_rulename]
-        self.strings = strings
+        self.strings = strings if strings is not None else []
         self.lineno = getattr(loc, 'lineno', 1)
         self.sourcename = getattr(loc, 'sourcename', loc)
 
@@ -113,7 +114,7 @@ class Tokenizer:
     # NOTE: This only makes sense if the input ("strings" argument) was
     #       provided at Tokenizer init time.
     def __iter__(self):
-        return self.tokens()
+        return self.tokens()      # note this returns the generator
 
     def tokens(self, strings=None, /, *, loc=None):
         """GENERATE tokens. See __init__() for arg descriptions."""
@@ -126,15 +127,29 @@ class Tokenizer:
             self.sourcename = loc.sourcename
             self.lineno = loc.lineno
 
-        # distinguish between line number tracking and not...
-        try:
-            g = enumerate(strings, start=self.lineno)
-        except TypeError:
-            g = ((None, s) for s in strings)
-
-        for i, s in g:
+        # each string in the iterable of strings will be considered
+        # as a separate line, lexed on its own.
+        for i, s in self.__tgen(strings):
             yield from self.string_to_tokens(
                 s, loc=TokLoc(lineno=i, sourcename=self.sourcename))
+
+    def __tgen(self, strings):
+        """Helper for tokens generator creation; allows for lineno vs None"""
+
+        # accommodate have line numbers, or not...
+        try:
+            linezippee = itertools.count(self.lineno)   # normal case
+        except TypeError:
+            linezippee = itertools.repeat(None)         # no line numbers
+
+        try:
+            g = zip(linezippee, strings)
+        except TypeError:
+            # something is wrong with strings (not iterable)
+            not_an_iterable = f"input: `{strings!r}` is not an iterable"
+            raise ValueError(not_an_iterable) from None
+
+        return g
 
     def string_to_tokens(self, s, /, *, loc=None):
         """Tokenize string 's', yield Tokens."""
@@ -152,18 +167,20 @@ class Tokenizer:
                 g = re.finditer(grules.joined_rx, s[so_far:])
                 baseoffset = so_far
 
-            # 'tm' is the TokenMatch that matched
+            # 'tm' is the TokenMatch that matched, or (of course) None
             tm, value, startpos, stoppos = self._nextmatch(g)
             startpos += baseoffset       # convert from relative
             stoppos += baseoffset
+
+            # Note that re.finditer can find a match that does not start at
+            # the beginning of the string (so_far). Failing to lex the next
+            # character is essentially a form of "tm is None" (i.e., no match)
             if tm is None or startpos != so_far:
                 break
 
-            # build the TokLok for error reporting
             so_far = stoppos
 
             # perform the TokenMatch "action" and if all good, yield a token
-
             context = TokenAction(
                 value=value,
                 location=TokLoc(s, sourcename, lineno, startpos, so_far),
@@ -182,7 +199,7 @@ class Tokenizer:
         if so_far != len(s):
             raise self.MatchError(
                 f"unmatched @{so_far}, {s=}",
-                loc=TokLoc(s, sourcename, lineno, so_far, so_far))
+                location=TokLoc(s, sourcename, lineno, so_far, so_far))
 
     def _nextmatch(self, g):
         """Support for string_to_tokens; returns next match and info"""
@@ -210,10 +227,10 @@ class Tokenizer:
 
     class MatchError(Exception):
         """Exception raised when the input doesn't match any rules"""
-        def __init__(self, *args, loc=None, **kwargs):
+        def __init__(self, *args, location=None, **kwargs):
             super().__init__(*args, **kwargs)
-            self.loc = loc
-            self.add_note(f"Token Location: {loc}")
+            self.location = location
+            self.add_note(f"Token Location: {location}")
 
     # convenience for use in case where strings that end with two
     # character sequence "backslash newline" should be combined with
