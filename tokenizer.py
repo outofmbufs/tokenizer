@@ -559,5 +559,9 @@ class TokenMatchRuleSwitch(TokenMatch):
 
 
 if __name__ == "__main__":
-    from tkztests import TestMethods, run_unit_tests
-    run_unit_tests(TestMethods)
+    try:
+        from tkztests import TestMethods, run_unit_tests
+    except ModuleNotFoundError:
+        pass
+    else:
+        run_unit_tests(TestMethods)
