@@ -200,19 +200,19 @@ class Tokenizer:
         so_far = offset = ctx.location.startpos
         working_s = ctx.location.s[offset:]
         for mobj in re.finditer(self.current_ruleset.joined_rx, working_s):
-            startpos = mobj.start() + offset
-            if startpos != so_far:
+            ctx.startpos = mobj.start() + offset
+            if ctx.startpos != so_far:
+#                ctx.startpos = ctx.endpos
                 break
             so_far = mobj.end() + offset
             tm = self.current_ruleset.pmap[mobj.lastgroup]
             ctx.token_id = tm.tokname
-            ctx.startpos = startpos
             ctx.endpos = so_far
             ctx.value = mobj.group(0)
 
             yield tm
 
-            ctx.startpos = so_far
+            ctx.startpos = ctx.endpos
 
     # support for switching the active rules.
     def nextruleset(self):
