@@ -1,10 +1,11 @@
 """A generic tokenizer driven by regular expressions."""
 
+# pylint: disable=missing-function-docstring
+# ... because pylint is annoying about this for property getters, etc.
 
 from dataclasses import dataclass, field
 import dataclasses                          # for dataclasses.replace
 from enum import Enum
-from collections import namedtuple
 import itertools
 import typing
 import re
@@ -45,6 +46,7 @@ import re
 #                     own TokenMatch subclasses need to know about this.
 #
 
+
 # A TokLoc describes a source location; for error reporting purposes.
 #    s          -- Entire string (i.e., typically an input line)
 #    sourcename -- Name of the input source as was given to the
@@ -67,6 +69,7 @@ class TokLoc:
 
     # Make another TokLoc like this one but with specific overrides
     def copy_with(self, **overrides):
+        """Copy a TokLoc optionally overriding some attributes."""
         return dataclasses.replace(self, **overrides)
 
 
@@ -173,43 +176,54 @@ class Tokenizer:
         # NOTE: _s2tok is tail-recursive for rule changes
         yield from self._s2tok(context)
 
-        if context.location.endpos != len(s):
+        if context.endpos != len(s):
             raise self.MatchError(
                 f"unmatched @{context.location}", location=context.location)
 
-
     def _s2tok(self, ctx):
-        grules = self.current_ruleset
-        for tm in self._matches(ctx):
-            try:
-                tok = tm.action(ctx)
-            except TypeError:       # usually this means tm.action is None
-                tok = tm.action
-            if tok is not None:
-                yield tok
 
-            # if a side effect of the token was to change the rules...
-            if grules is not self.current_ruleset:
-                ctx.startpos = ctx.endpos
-                yield from self._s2tok(ctx)
+        # This outer ('while') loop is for rules-changes.
+        # The inner ('for') loop works through _matches() on the given set
+        # of rules, but if they change it bounces to the outer loop
+        # to pick up lexing with a new _matches() using the new rules.
+        # Lexing is done only when (any) _matches() reaches the very end.
+        while True:
+            ctx.startpos = ctx.endpos
+            grules = self.current_ruleset
+            for tm in self._matches(ctx):
+                try:
+                    tok = tm.action(ctx)
+                except TypeError:    # usually means tm.action is None
+                    tok = tm.action
+                if tok is not None:
+                    yield tok
+                # If the tm.action changed the lexing rules...
+                if grules is not self.current_ruleset:
+                    break                           # but nuke this _matches
+            else:
+                # got all the way through _matches, all done!
                 break
 
     def _matches(self, ctx):
         """Support for string_to_tokens; returns next match and info"""
 
-        so_far = offset = ctx.location.startpos
-        working_s = ctx.location.s[offset:]
+        starting_startpos = ctx.startpos
+        working_s = ctx.location.s[starting_startpos:]
         for mobj in re.finditer(self.current_ruleset.joined_rx, working_s):
-            ctx.startpos = mobj.start() + offset
-            if ctx.startpos != so_far:
-#                ctx.startpos = ctx.endpos
+            ctx.startpos = mobj.start() + starting_startpos
+
+            # finditer can find matches that skip the next character
+            # (in other words, there is an intervening non-match)
+            # Catch this by startpos being off from where expected.
+            if ctx.startpos != ctx.endpos:
+                # By convention, startpos == endpos in this condition
+                ctx.startpos = ctx.endpos
                 break
-            so_far = mobj.end() + offset
+
             tm = self.current_ruleset.pmap[mobj.lastgroup]
             ctx.token_id = tm.tokname
-            ctx.endpos = so_far
+            ctx.endpos = mobj.end() + starting_startpos
             ctx.value = mobj.group(0)
-
             yield tm
 
             ctx.startpos = ctx.endpos
@@ -397,7 +411,6 @@ class TokenAction:
 
     @startpos.setter
     def startpos(self, value):
-        # can't modify a TokLoc, so...
         self.location = self.location.copy_with(startpos=value)
 
     @property
@@ -407,8 +420,6 @@ class TokenAction:
     @endpos.setter
     def endpos(self, value):
         self.location = self.location.copy_with(endpos=value)
-
-
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
