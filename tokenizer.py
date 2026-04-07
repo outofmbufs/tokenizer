@@ -2,7 +2,9 @@
 
 
 from dataclasses import dataclass, field
+import dataclasses                          # for dataclasses.replace
 from enum import Enum
+from collections import namedtuple
 import itertools
 import typing
 import re
@@ -37,7 +39,11 @@ import re
 #                     TokenID denoting its type (CONSTANT, IDENTIFIER, etc)
 #
 #    TokLoc           source location information, for error reporting.
-
+#
+#    TokenAction      Context used by the framework; part of the interface
+#                     for TokenMatch subclasses. Only applications with their
+#                     own TokenMatch subclasses need to know about this.
+#
 
 # A TokLoc describes a source location; for error reporting purposes.
 #    s          -- Entire string (i.e., typically an input line)
@@ -58,6 +64,10 @@ class TokLoc:
     lineno: int | None = None
     startpos: int = 0
     endpos: int = 0
+
+    # Make another TokLoc like this one but with specific overrides
+    def copy_with(self, **overrides):
+        return dataclasses.replace(self, **overrides)
 
 
 # This Token class is the Token type produced by the Tokenizer.
@@ -129,87 +139,79 @@ class Tokenizer:
 
         # each string in the iterable of strings will be considered
         # as a separate line, lexed on its own.
-        for i, s in self.__tgen(strings):
+        for i, s in self.__linenumbers_and_lines(strings):
             yield from self.string_to_tokens(
                 s, loc=TokLoc(lineno=i, sourcename=self.sourcename))
+            self.lineno += 1
 
-    def __tgen(self, strings):
+    def __linenumbers_and_lines(self, strings):
         """Helper for tokens generator creation; allows for lineno vs None"""
 
-        # accommodate have line numbers, or not...
         try:
-            linezippee = itertools.count(self.lineno)   # normal case
+            linenums = itertools.count(self.lineno)   # normal case
         except TypeError:
-            linezippee = itertools.repeat(None)         # no line numbers
+            linenums = itertools.repeat(None)         # no line numbers
 
         try:
-            g = zip(linezippee, strings)
+            g = zip(linenums, strings)
         except TypeError:
             # something is wrong with strings (not iterable)
             not_an_iterable = f"input: `{strings!r}` is not an iterable"
             raise ValueError(not_an_iterable) from None
-
         return g
 
     def string_to_tokens(self, s, /, *, loc=None):
         """Tokenize string 's', yield Tokens."""
 
-        sourcename = getattr(loc, 'sourcename', self.sourcename)
-        lineno = getattr(loc, 'lineno', self.lineno)
+        # This context will be modified with a new TokLoc (and other
+        # info) at each match. Start it out with the starting location info.
+        context = TokenAction(tkz=self)
+        if loc is None:
+            loc = TokLoc(sourcename=self.sourcename, lineno=self.lineno)
+        context.location = loc.copy_with(s=s)
 
-        so_far = 0
-        grules = None      # the rules that were used to make generator 'g'
+        # NOTE: _s2tok is tail-recursive for rule changes
+        yield from self._s2tok(context)
 
-        while True:
-            # this fires on any rules change AND ALSO the first time through
-            if grules is not self.current_ruleset:
-                grules = self.current_ruleset
-                g = re.finditer(grules.joined_rx, s[so_far:])
-                baseoffset = so_far
+        if context.location.endpos != len(s):
+            raise self.MatchError(
+                f"unmatched @{context.location}", location=context.location)
 
-            # 'tm' is the TokenMatch that matched, or (of course) None
-            tm, value, startpos, stoppos = self._nextmatch(g)
-            startpos += baseoffset       # convert from relative
-            stoppos += baseoffset
 
-            # Note that re.finditer can find a match that does not start at
-            # the beginning of the string (so_far). Failing to lex the next
-            # character is essentially a form of "tm is None" (i.e., no match)
-            if tm is None or startpos != so_far:
-                break
-
-            so_far = stoppos
-
-            # perform the TokenMatch "action" and if all good, yield a token
-            context = TokenAction(
-                value=value,
-                location=TokLoc(s, sourcename, lineno, startpos, so_far),
-                tkz=self,
-                token_id=self.rules.TokenID[tm.tokname],
-                token_cls=self.Token
-            )
+    def _s2tok(self, ctx):
+        grules = self.current_ruleset
+        for tm in self._matches(ctx):
             try:
-                tok = tm.action(context)
-            except TypeError:
-                tok = tm.action        # usually this means tok = None
+                tok = tm.action(ctx)
+            except TypeError:       # usually this means tm.action is None
+                tok = tm.action
             if tok is not None:
                 yield tok
 
-        # If haven't made it to the end, something didn't match along the way
-        if so_far != len(s):
-            raise self.MatchError(
-                f"unmatched @{so_far}, {s=}",
-                location=TokLoc(s, sourcename, lineno, so_far, so_far))
+            # if a side effect of the token was to change the rules...
+            if grules is not self.current_ruleset:
+                ctx.location = ctx.location.copy_with(
+                    startpos=ctx.location.endpos)
+                yield from self._s2tok(ctx)
+                break
 
-    def _nextmatch(self, g):
+    def _matches(self, ctx):
         """Support for string_to_tokens; returns next match and info"""
 
-        try:
-            mobj = next(g)
-        except StopIteration:
-            return None, None, -1, -1
-        tm = self.current_ruleset.pmap[mobj.lastgroup]
-        return tm, mobj.group(0), mobj.start(), mobj.end()
+        so_far = offset = ctx.location.startpos
+        working_s = ctx.location.s[offset:]
+        for mobj in re.finditer(self.current_ruleset.joined_rx, working_s):
+            startpos = mobj.start() + offset
+            if startpos != so_far:
+                break
+            so_far = mobj.end() + offset
+            tm = self.current_ruleset.pmap[mobj.lastgroup]
+            ctx.token_id = tm.tokname
+            ctx.location = ctx.location.copy_with(
+                startpos=startpos, endpos=so_far)
+            ctx.value = mobj.group(0)
+            yield tm
+            ctx.location = ctx.location.copy_with(startpos=so_far)
 
     # support for switching the active rules.
     def nextruleset(self):
@@ -357,23 +359,26 @@ class TokenRules:
 # When the action method is ready to make a token it can use the maketoken
 # method to construct a token from the context info (though if the application
 # requires something else, it is free to make the token any way it wants).
-# Subclasses of TokenMatch will usually tweak this context as necessary; see,
-# for example, TokenMatchConvert which modifies the value attribute.
+# Subclasses of TokenMatch may modify attributes within this context;
+# for example, TokenMatchConvert modifies the value attribute.
 #
 
 @dataclass
 class TokenAction:
     """Context for the action method in a TokenMatch."""
 
-    value: typing.Any
-    location: TokLoc
-    tkz: Tokenizer
-    token_id: Enum | str
-    token_cls: typing.Callable      # almost always this is Token (the class)
+    value: typing.Any = None
+    location: TokLoc = None
+    tkz: Tokenizer = None
+    token_id: Enum | str = None
+    token_cls: typing.Callable = None  # usually this is Token (the class)
+
+    def __post_init__(self):
+        if self.token_cls is None and self.tkz is not None:
+            self.token_cls = self.tkz.Token
 
     def maketoken(self):
         """Construct a token from the context."""
-
         # as a convenience, if token_id is convertible to the Enum, convert it
         try:
             tkid = self.tkz.rules.TokenID[self.token_id]
