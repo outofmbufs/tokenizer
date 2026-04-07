@@ -166,29 +166,14 @@ class Tokenizer:
     def string_to_tokens(self, s, /, *, loc=None):
         """Tokenize string 's', yield Tokens."""
 
-        # This context will be modified with a new TokLoc (and other
-        # info) at each match. Start it out with the starting location info.
-        context = TokenAction(tkz=self)
+        # ctx is context (TokLoc etc) as matches proceed; set it up.
+        ctx = TokenAction(tkz=self)
         if loc is None:
             loc = TokLoc(sourcename=self.sourcename, lineno=self.lineno)
-        context.location = loc.copy_with(s=s)
+        ctx.location = loc.copy_with(s=s)
 
-        # NOTE: _s2tok is tail-recursive for rule changes
-        yield from self._s2tok(context)
-
-        if context.endpos != len(s):
-            raise self.MatchError(
-                f"unmatched @{context.location}", location=context.location)
-
-    def _s2tok(self, ctx):
-
-        # This outer ('while') loop is for rules-changes.
-        # The inner ('for') loop works through _matches() on the given set
-        # of rules, but if they change it bounces to the outer loop
-        # to pick up lexing with a new _matches() using the new rules.
-        # Lexing is done only when (any) _matches() reaches the very end.
+        # outer 'while' loop allows for rules changes
         while True:
-            ctx.startpos = ctx.endpos
             grules = self.current_ruleset
             for tm in self._matches(ctx):
                 try:
@@ -197,36 +182,55 @@ class Tokenizer:
                     tok = tm.action
                 if tok is not None:
                     yield tok
-                # If the tm.action changed the lexing rules...
+                # If the tm.action changed the lexing rules then get
+                # out of this inner 'for' loop so as to get a
+                # new _matches sequence
                 if grules is not self.current_ruleset:
-                    break                           # but nuke this _matches
+                    break                       # but nuke this _matches
             else:
-                # got all the way through _matches, all done!
+                # 'for' loop ended without a rules change, so all done
                 break
+
+        if ctx.endpos != len(s):
+            raise self.MatchError(
+                f"unmatched @{ctx.location}", location=ctx.location)
 
     def _matches(self, ctx):
         """Support for string_to_tokens; returns next match and info"""
 
-        starting_startpos = ctx.startpos
+        # NOTE: This is a little puzzling:
+        #   If this is the FIRST TIME:
+        #      ctx.endpos is zero; everything is zero and the full string
+        #      is sent to finditer().
+        #
+        #   If this is AFTER A RULES CHANGE:
+        #      ctx.endpos is the end of the rules-change match. "Eat" the
+        #      the string up to there; starting_startpos is the "offset" of
+        #      that (and also used to adjust .location attributes to be
+        #      relative to the entire string, not just the working string)
+        starting_startpos = ctx.endpos
         working_s = ctx.location.s[starting_startpos:]
+
+        # loop until no more matches, OR a "missed" match that does not
+        # include the very next character.
+        # NOTE: If there is a rules change, string_to_tokens abandons
+        #       this generator without letting it complete. It will then
+        #       restart the generator with the new rules; see above too.
         for mobj in re.finditer(self.current_ruleset.joined_rx, working_s):
             ctx.startpos = mobj.start() + starting_startpos
 
-            # finditer can find matches that skip the next character
-            # (in other words, there is an intervening non-match)
-            # Catch this by startpos being off from where expected.
+            # Check for matches not consuming the immediate next char
             if ctx.startpos != ctx.endpos:
-                # By convention, startpos == endpos in this condition
-                ctx.startpos = ctx.endpos
-                break
+                # flip start/end so applications can know what did not match
+                ctx.startpos, ctx.endpos = ctx.endpos, ctx.startpos
+                raise self.MatchError(
+                    f"unmatched @{ctx.location}", location=ctx.location)
 
             tm = self.current_ruleset.pmap[mobj.lastgroup]
             ctx.token_id = tm.tokname
             ctx.endpos = mobj.end() + starting_startpos
             ctx.value = mobj.group(0)
             yield tm
-
-            ctx.startpos = ctx.endpos
 
     # support for switching the active rules.
     def nextruleset(self):
