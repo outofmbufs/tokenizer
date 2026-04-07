@@ -145,7 +145,7 @@ class TestMethods(unittest.TestCase):
             (rules.TokenID.ANY_B, 4, 7),
             (rules.TokenID.CAB, 7, 12),
             (rules.TokenID.ANY_B, 12, 13),
-            (Tokenizer.MatchError, 13),
+            (Tokenizer.MatchError, 13, 14),
             ]
 
         tg = tkz.tokens()
@@ -154,9 +154,7 @@ class TestMethods(unittest.TestCase):
                 result = next(tg)
             except Tokenizer.MatchError as x:
                 self.assertEqual(xp[1], x.location.startpos)
-                # the end position is always the start position because
-                # no characters are consumed (by definition) on match fail
-                self.assertEqual(x.location.startpos, x.location.endpos)
+                self.assertEqual(xp[2], x.location.endpos)
             else:
                 self.assertEqual(xp[0], result.id)
                 self.assertEqual(xp[1], result.location.startpos)
@@ -355,6 +353,52 @@ class TestMethods(unittest.TestCase):
 
         for token, ex in strictzip(
                 tkz.string_to_tokens('zz/@/z/@/z'), expected):
+            self.assertEqual(token.id, ex)
+            if ex in (rules.TokenID.ZEE, rules.TokenID.ZED):
+                self.assertEqual(token.value, 'z')
+            elif ex == rules.TokenID.SWITCH:
+                self.assertEqual(token.value, '/@/')
+            else:
+                self.assertTrue(False)
+
+    # Same as ruleswitch2 but breaking each token into its own string
+    # so as to test whether it works right if a rules switch is the
+    # end of an individual line string.
+    def test_ruleswitch_eol(self):
+
+        r1 = [
+            TokenMatch('ZEE', r'z'),
+            TokenMatchRuleSwitch('SWITCH', r'/@/', rulename='ALT')
+        ]
+
+        r2 = [
+            TokenMatch('ZED', r'z'),
+            TokenMatchRuleSwitch('SWITCH', r'/@/', rulename='PRIMARY')
+        ]
+        ng1 = NamedRuleSet(rules=r1, name='PRIMARY')
+        ng2 = NamedRuleSet(rules=r2, name='ALT')
+        rules = TokenRules(ng1, ng2)
+
+        lines = [
+            'z',
+            'z',
+            '/@/',
+            'z',
+            '/@/',
+            'z'
+        ]
+
+        tkz = Tokenizer(rules, lines)
+        expected = (
+            rules.TokenID.ZEE,
+            rules.TokenID.ZEE,
+            rules.TokenID.SWITCH,
+            rules.TokenID.ZED,
+            rules.TokenID.SWITCH,
+            rules.TokenID.ZEE,
+        )
+
+        for token, ex in strictzip(tkz.tokens(), expected):
             self.assertEqual(token.id, ex)
             if ex in (rules.TokenID.ZEE, rules.TokenID.ZED):
                 self.assertEqual(token.value, 'z')
