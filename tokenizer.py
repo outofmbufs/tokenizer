@@ -190,8 +190,7 @@ class Tokenizer:
 
             # if a side effect of the token was to change the rules...
             if grules is not self.current_ruleset:
-                ctx.location = ctx.location.copy_with(
-                    startpos=ctx.location.endpos)
+                ctx.startpos = ctx.endpos
                 yield from self._s2tok(ctx)
                 break
 
@@ -207,11 +206,13 @@ class Tokenizer:
             so_far = mobj.end() + offset
             tm = self.current_ruleset.pmap[mobj.lastgroup]
             ctx.token_id = tm.tokname
-            ctx.location = ctx.location.copy_with(
-                startpos=startpos, endpos=so_far)
+            ctx.startpos = startpos
+            ctx.endpos = so_far
             ctx.value = mobj.group(0)
+
             yield tm
-            ctx.location = ctx.location.copy_with(startpos=so_far)
+
+            ctx.startpos = so_far
 
     # support for switching the active rules.
     def nextruleset(self):
@@ -388,6 +389,26 @@ class TokenAction:
             else:
                 raise
         return self.token_cls(tkid, self.value, self.location)
+
+    # these really simplify location tracking within string_to_tokens
+    @property
+    def startpos(self):
+        return self.location.startpos
+
+    @startpos.setter
+    def startpos(self, value):
+        # can't modify a TokLoc, so...
+        self.location = self.location.copy_with(startpos=value)
+
+    @property
+    def endpos(self):
+        return self.location.endpos
+
+    @endpos.setter
+    def endpos(self, value):
+        self.location = self.location.copy_with(endpos=value)
+
+
 
 
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
