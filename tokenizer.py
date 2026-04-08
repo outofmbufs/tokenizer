@@ -593,4 +593,4 @@ if __name__ == "__main__":
     except ModuleNotFoundError:
         pass
     else:
-        run_unit_tests(TestMethods)
+        run_unit_tests()
