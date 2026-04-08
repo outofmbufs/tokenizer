@@ -3,6 +3,8 @@
 # pylint: disable=missing-function-docstring
 # ... because pylint is annoying about this for property getters, etc.
 
+from __future__ import annotations          # for forward type references
+
 from dataclasses import dataclass, field
 import dataclasses                          # for dataclasses.replace
 from enum import Enum
@@ -12,10 +14,31 @@ import re
 
 # Regular-expression line-oriented tokenizer.
 #
-# This is a thin layer on top of using re.match or re.finditer directly,
-# and so is useful for lexing when a line-by-line/regexp model works.
+# Started as a "thin" layer on top of using re.match or re.finditer directly.
+# Got progressively less thin over time :)
 #
-# The basics:
+# Supports a more abstract way to use that 're' lexing design pattern,
+# especially with encapsulating pattern specifications and code actions.
+#
+# TL;DR: here is a working example:
+#
+#    from tokenizer import TokenMatch, TokenMatchInt, TokenRules, Tokenizer
+#
+#    rules = TokenRules([
+#        TokenMatch('WHITESPACE', r'\s+'),
+#        TokenMatch('IDENTIFIER', TokenMatch.ID_ASCII),
+#        TokenMatchInt('CONSTANT', r'-?[0-9]+'),
+#    ])
+#
+#    input_strings = ["abc123 3750  -17 def",
+#                     "xyzzy"]
+#
+#    tkz = Tokenizer(rules, input_strings)
+#    for token in tkz.tokens():
+#        print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+#
+# Too-Long part:
+#
 #    Tokenizer        Main object. Built from a TokenRules object
 #
 #    TokenRules       In simple applications this is built from one or more
@@ -53,8 +76,8 @@ import re
 #                  tokenizer (when created/invoked). CAN BE None.
 #    lineno     -- Line number, counted from the start lineno given
 #                  to the tokenizer. CAN BE None (means no line numbers)
-#    startpos   -- Index with s where the error occurred.
-#    endpos     -- ONE PAST the end of the error (i.e., the "next" position)
+#    startpos   -- Index with s where the token match or error occurred.
+#    endpos     -- ONE PAST the end of the match/error (i.e., "next" position)
 #
 # NOTE: A bare TokLoc() can be specified if none of this is useful/known.
 #
@@ -86,11 +109,69 @@ class Token:
     location: TokLoc           # source stream info for error reporting
 
 
+# TokenAction is a mutable context passed to a TokenMatch.action method.
+# When the action method is ready to make a token it can use the maketoken
+# method to construct a token from the context info (though if the application
+# requires something else, it is free to make the token any way it wants).
+# Subclasses of TokenMatch may modify attributes within this context;
+# for example, TokenMatchConvert modifies the value attribute.
+#
+
+@dataclass
+class TokenAction:
+    """Context for the action method in a TokenMatch."""
+
+    value: typing.Any = None
+    location: TokLoc = None
+    tkz: Tokenizer = None
+    token_id: Enum | str = None
+    token_cls: typing.Callable = None  # usually this is Token (the class)
+
+    def __post_init__(self):
+        if self.token_cls is None and self.tkz is not None:
+            self.token_cls = self.tkz.Token
+
+    def maketoken(self):
+        """Construct a token from the context."""
+        # as a convenience, if token_id is convertible to the Enum, convert it
+        try:
+            tkid = self.tkz.rules.TokenID[self.token_id]
+        except KeyError:
+            if isinstance(self.token_id, self.tkz.rules.TokenID):
+                tkid = self.token_id
+            else:
+                raise
+        return self.token_cls(tkid, self.value, self.location)
+
+    # to simplify code managing startpos/endpos during lexing, those attrs
+    # are exposed as TokenAction attributes (properties) although they are
+    # stored within the 'location' TokLoc. Note that TokLoc's are immutable
+    # which is why the setters here update the TokLoc via copy_with.
+    @property
+    def startpos(self):
+        return self.location.startpos
+
+    @startpos.setter
+    def startpos(self, value):
+        self.location = self.location.copy_with(startpos=value)
+
+    @property
+    def endpos(self):
+        return self.location.endpos
+
+    @endpos.setter
+    def endpos(self, value):
+        self.location = self.location.copy_with(endpos=value)
+
+
 class Tokenizer:
     """Break iterables of strings into Tokens with rules from regexps."""
 
     # subclasses can change the Token type produced by overriding this
     Token = Token
+
+    # subclasses can change the TokenAction "context" by overriding this
+    TokenAction = TokenAction
 
     # TOKENIZER
     def __init__(self, rules, strings=None, /, *, loc=None):
@@ -167,7 +248,7 @@ class Tokenizer:
         """Tokenize string 's', yield Tokens."""
 
         # ctx is context (TokLoc etc) as matches proceed; set it up.
-        ctx = TokenAction(tkz=self)
+        ctx = self.TokenAction(tkz=self)
         if loc is None:
             loc = TokLoc(sourcename=self.sourcename, lineno=self.lineno)
         ctx.location = loc.copy_with(s=s)
@@ -374,58 +455,6 @@ class TokenRules:
         return Enum('TokenID', allnames)
 
 
-# TokenAction is a mutable context passed to a TokenMatch.action method.
-# When the action method is ready to make a token it can use the maketoken
-# method to construct a token from the context info (though if the application
-# requires something else, it is free to make the token any way it wants).
-# Subclasses of TokenMatch may modify attributes within this context;
-# for example, TokenMatchConvert modifies the value attribute.
-#
-
-@dataclass
-class TokenAction:
-    """Context for the action method in a TokenMatch."""
-
-    value: typing.Any = None
-    location: TokLoc = None
-    tkz: Tokenizer = None
-    token_id: Enum | str = None
-    token_cls: typing.Callable = None  # usually this is Token (the class)
-
-    def __post_init__(self):
-        if self.token_cls is None and self.tkz is not None:
-            self.token_cls = self.tkz.Token
-
-    def maketoken(self):
-        """Construct a token from the context."""
-        # as a convenience, if token_id is convertible to the Enum, convert it
-        try:
-            tkid = self.tkz.rules.TokenID[self.token_id]
-        except KeyError:
-            if isinstance(self.token_id, self.tkz.rules.TokenID):
-                tkid = self.token_id
-            else:
-                raise
-        return self.token_cls(tkid, self.value, self.location)
-
-    # these really simplify location tracking within string_to_tokens
-    @property
-    def startpos(self):
-        return self.location.startpos
-
-    @startpos.setter
-    def startpos(self, value):
-        self.location = self.location.copy_with(startpos=value)
-
-    @property
-    def endpos(self):
-        return self.location.endpos
-
-    @endpos.setter
-    def endpos(self, value):
-        self.location = self.location.copy_with(endpos=value)
-
-
 # A TokenMatch combines a name (e.g., 'CONSTANT') with a regular
 # expression (e.g., r'-?[0-9]+'), and its action() method for
 # processing the match and creating the token.
@@ -453,7 +482,7 @@ class TokenMatch:
 
     def __post_init__(self):
 
-        # fail early, because failing later is very confusing...
+        # fail early if regexp bad; failing later is very confusing...
         if self.regexp is not None:
             try:
                 _ = re.compile(self.regexp)
