@@ -333,8 +333,8 @@ The examples used above have all provided the input as an iterable of strings su
 
     with open('example-input', 'r') as f:
         tkz = Tokenizer(rules, f)
-	for token in tkz.tokens():
-	    print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+        for token in tkz.tokens():
+            print(f"ID = {token.id:20s} VALUE = {token.value!r}")
 
 
 This will produce almost the same output as the Quick Start example, except that now there are newline characters between the lines and they show:
@@ -366,8 +366,8 @@ Instead of tying the object creation and input together, there are two other way
     #       abc123 3750   def
     #       xyzzy
     with open('example-input', 'r') as f:
-	for token in tkz.tokens(f):
-	    print(f"ID = {token.id:20s} VALUE = {token.value!r}")
+        for token in tkz.tokens(f):
+            print(f"ID = {token.id:20s} VALUE = {token.value!r}")
 
 This produces output identical to the previous example. This also works with an iterable of strings provided instead of a file.
 
@@ -413,7 +413,7 @@ Writing custom TokenMatch classes is straightforward; create a subclass that ove
 
     def action(self, ta, /):
         INPUTS: ta - A (mutable) TokenAction object containing
-	        data useful for constructing the token
+                data useful for constructing the token
        RETURNS: A token, or None (to discard this match)
 
 If the `action` for a particular `TokenMatch` subclass will always return None, it suffices to set the `action` attribute itself to None. This, in fact, is how the TokenMatchIgnore subclass is implemented:
@@ -582,7 +582,7 @@ If, for example, an application requires a mutable `Token` object (or requires a
     tkz = MyTokenizer(rules)
     for token in tkz.string_to_tokens("aabab"):
         print(token.id, repr(token.value))
-	# this would fail with the built-in immutable Token class
+        # this would fail with the built-in immutable Token class
         token.foo = 'bar'
 
 Note that the `Tokenizer` framework expects the signature for creating a token object to be the three arguments as defined in the built-in `Token` class; if other arguments are needed they will have to be supplied by partial or other magic:
@@ -700,7 +700,7 @@ Conceptually the INT8 cases could be handled this way, ignoring the INT16 cases:
         TokenMatchInt('INT8', '0'),
         TokenMatchInt('INT8', '1'),
 
-	# 253 more TokenMatchInt patterns go here
+        # 253 more TokenMatchInt patterns go here
 
         TokenMatchInt('INT8', '255'),
         TokenMatchInt('INT', r'-?[0-9]+'),
