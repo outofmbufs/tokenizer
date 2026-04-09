@@ -519,7 +519,7 @@ class TestMethods(unittest.TestCase):
                 self.assertEqual(t.value, val)
 
 
-def run_unit_tests():
+def run_unit_tests(*args):
     unittest.main()
 
 

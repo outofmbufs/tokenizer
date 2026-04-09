@@ -247,11 +247,10 @@ class Tokenizer:
     def string_to_tokens(self, s, /, *, loc=None):
         """Tokenize string 's', yield Tokens."""
 
-        # ctx is context (TokLoc etc) as matches proceed; set it up.
-        ctx = self.TokenAction(tkz=self)
+        # if not given via loc, pick up sourcename/lineno from init
         if loc is None:
             loc = TokLoc(sourcename=self.sourcename, lineno=self.lineno)
-        ctx.location = loc.copy_with(s=s)
+        ctx = self.TokenAction(tkz=self, location=loc.copy_with(s=s))
 
         # outer 'while' loop allows for rules changes
         while True:
@@ -277,29 +276,23 @@ class Tokenizer:
                 f"unmatched @{ctx.location}", location=ctx.location)
 
     def _matches(self, ctx):
-        """Support for string_to_tokens; returns next match and info"""
+        """Supports string_to_tokens; return next match and update context."""
 
-        # NOTE: This is a little puzzling:
-        #   If this is the FIRST TIME:
-        #      ctx.endpos is zero; everything is zero and the full string
-        #      is sent to finditer().
+        compiled_re = self.current_ruleset.joined_crx
+
+        # This generates matches until one of three things happens:
+        #   - no more matches (duh)
+        #   - failed match (does not match next character)
+        #   - [subtle] a rules change occurs in which case the caller
+        #              abandons this generator and will come back with the
+        #              new set of rules activated.
         #
-        #   If this is AFTER A RULES CHANGE:
-        #      ctx.endpos is the end of the rules-change match. "Eat" the
-        #      the string up to there; starting_startpos is the "offset" of
-        #      that (and also used to adjust .location attributes to be
-        #      relative to the entire string, not just the working string)
-        starting_startpos = ctx.endpos
-        working_s = ctx.location.s[starting_startpos:]
+        # Thus, usually ctx.endpos (given to finditer as the starting pos)
+        # is zero at the start. But if this is after a rules change,
+        # ctx.endpos will be where matching resumes with the new rules.
 
-        # loop until no more matches, OR a "missed" match that does not
-        # include the very next character.
-        # NOTE: If there is a rules change, string_to_tokens abandons
-        #       this generator without letting it complete. It will then
-        #       restart the generator with the new rules; see above too.
-        for mobj in re.finditer(self.current_ruleset.joined_rx, working_s):
-            ctx.startpos = mobj.start() + starting_startpos
-
+        for mobj in compiled_re.finditer(ctx.location.s, ctx.endpos):
+            ctx.startpos = mobj.start()
             # Check for matches not consuming the immediate next char
             if ctx.startpos != ctx.endpos:
                 # flip start/end so applications can know what did not match
@@ -309,7 +302,7 @@ class Tokenizer:
 
             tm = self.current_ruleset.pmap[mobj.lastgroup]
             ctx.token_id = tm.tokname
-            ctx.endpos = mobj.end() + starting_startpos
+            ctx.endpos = mobj.end()
             ctx.value = mobj.group(0)
             yield tm
 
@@ -394,18 +387,23 @@ class NamedRuleSet:
     name: typing.Optional[str] = None
 
     pmap: dict = field(init=False)        # created from the rules
-    joined_rx: str = field(init=False)    # ...
+    joined_crx: str = field(init=False)   # ...
 
     def __post_init__(self):
         # Create one enormous "or" regexp with (?P=name) annotations
         # for each clause within it. The 'name' is a "pname" - not a
         # tokname - because toknames can appear multiple times in rules.
         # The pmap attribute maps these annotation names to token names
+        #
+        # NOTE: The regexp is compiled not because of speed optimization,
+        #       but because only the compiled version of finditer has
+        #       a start position offset, which comes in handy.
 
         self.pmap = {f"PN{i:04d}": tm for i, tm in enumerate(self.rules)}
-        self.joined_rx = '|'.join(f'(?P<{pname}>{tm.regexp})'
-                                  for pname, tm in self.pmap.items()
-                                  if tm.regexp is not None)
+        self.joined_crx = re.compile(
+            '|'.join(f'(?P<{pname}>{tm.regexp})'
+                     for pname, tm in self.pmap.items()
+                     if tm.regexp is not None))
 
 
 #
@@ -593,4 +591,4 @@ if __name__ == "__main__":
     except ModuleNotFoundError:
         pass
     else:
-        run_unit_tests()
+        run_unit_tests(TestMethods)
